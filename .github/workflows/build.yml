@@ -52,16 +52,29 @@ jobs:
           grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
           grep -q 'realtek/' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/' >> Makefile
 
+      - name: Normalizeaza config-ul
+        run: |
+          echo "=== inainte de normalizare ==="
+          file vili_defconfig
+          if file vili_defconfig | grep -qi 'UTF-16'; then
+            echo "convertesc din UTF-16 in UTF-8"
+            iconv -f UTF-16LE -t UTF-8 vili_defconfig > vili_utf8
+            mv vili_utf8 vili_defconfig
+          fi
+          sed -i '1s/^\xEF\xBB\xBF//' vili_defconfig
+          sed -i 's/\r$//' vili_defconfig
+          echo "=== dupa normalizare ==="
+          file vili_defconfig
+          echo "linii: $(wc -l < vili_defconfig)"
+          echo "linii CONFIG: $(grep -c '^CONFIG_' vili_defconfig || true)"
+          echo "octeti NUL: $(tr -d '\0' < vili_defconfig | wc -c)"
+          if ! grep -q '^CONFIG_' vili_defconfig; then
+            echo "EROARE: config-ul nu e text ASCII valid"
+            exit 1
+          fi
+
       - name: Pregateste config-ul
         run: |
-          set -e
-          echo "=== verificare line endings inainte ==="
-          file vili_defconfig
-          grep -c $'\r' vili_defconfig || true
-          sed -i 's/\r$//' vili_defconfig
-          echo "=== dupa curatare ==="
-          wc -l vili_defconfig
-          grep -c '^CONFIG_' vili_defconfig
           cp vili_defconfig kernel/arch/arm64/configs/vili_defconfig
           cd kernel/arch/arm64/configs
           sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
@@ -90,7 +103,7 @@ jobs:
           ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
           make O=out $ARGS vili_defconfig
           echo "=== verificare config generat ==="
-          wc -l out/.config
+          echo "linii .config: $(wc -l < out/.config)"
           grep -E "^CONFIG_(LOCALVERSION|RTC_LIB|MODVERSIONS|ATH9K_HTC|RTL8187|WLAN_VENDOR_ATH)=" out/.config || true
           echo "=== sfarsit verificare ==="
           make -j$(nproc) O=out $ARGS
