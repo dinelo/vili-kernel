@@ -1,0 +1,85 @@
+name: Build vili NetHunter kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Instaleaza dependinte
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
+            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu zip kmod
+
+      - name: Cloneaza sursa Xiaomi
+        run: |
+          git clone --depth 1 -b vili-r-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+
+      - name: Cloneaza mainline 5.4.86
+        run: |
+          git clone --depth 1 -b v5.4.86 \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git mainline
+
+      - name: Adauga driverele ath9k_htc si rtl8187
+        run: |
+          ML="$GITHUB_WORKSPACE/mainline/drivers/net/wireless"
+          WL="$GITHUB_WORKSPACE/kernel/drivers/net/wireless"
+          cp -r "$ML/ath" "$WL/"
+          mkdir -p "$WL/realtek"
+          cp -r "$ML/realtek/rtl818x" "$WL/realtek/"
+          cd "$WL"
+          grep -q 'wireless/ath/Kconfig' Kconfig || echo 'source "drivers/net/wireless/ath/Kconfig"' >> Kconfig
+          grep -q 'WLAN_VENDOR_ATH' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_ATH) += ath/' >> Makefile
+          grep -q 'realtek/rtl818x/Kconfig' Kconfig || echo 'source "drivers/net/wireless/realtek/rtl818x/Kconfig"' >> Kconfig
+          touch realtek/Makefile
+          grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
+          grep -q 'realtek/' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/' >> Makefile
+
+      - name: Pregateste config-ul
+        run: |
+          cp vili_defconfig kernel/arch/arm64/configs/vili_defconfig
+          cd kernel/arch/arm64/configs
+          sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
+          sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' vili_defconfig
+          sed -i 's|^CONFIG_MODVERSIONS=y|CONFIG_MODVERSIONS=n|' vili_defconfig
+          cat >> vili_defconfig <<'EOF'
+          CONFIG_WLAN_VENDOR_ATH=y
+          CONFIG_WLAN_VENDOR_REALTEK=y
+          CONFIG_ATH9K_HTC=m
+          CONFIG_ATH9K_HW=m
+          CONFIG_ATH9K_COMMON=m
+          CONFIG_ATH_COMMON=m
+          CONFIG_RTL8187=m
+          CONFIG_EEPROM_93CX6=m
+          CONFIG_AVERAGE=y
+          CONFIG_CRC_CCITT=y
+          EOF
+
+      - name: Build
+        run: |
+          cd kernel
+          export PATH=/usr/lib/llvm-14/bin:$PATH
+          export ARCH=arm64
+          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
+          make O=out $ARGS vili_defconfig
+          make -j$(nproc) O=out $ARGS
+
+      - name: Verifica vermagic
+        run: |
+          cd kernel
+          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" | while read m; do
+            echo "--- $m"; modinfo "$m" | grep -i vermagic
+          done
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build
+          path: |
+            kernel/out/arch/arm64/boot/Image*
+            kernel/out/arch/arm64/boot/dts/**/*.dtb
+            kernel/out/drivers/net/wireless/**/*.ko
