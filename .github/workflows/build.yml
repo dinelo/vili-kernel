@@ -54,8 +54,7 @@ jobs:
 
       - name: Normalizeaza config-ul
         run: |
-          echo "=== inainte de normalizare ==="
-          file vili_defconfig
+          set -e
           if file vili_defconfig | grep -qi 'UTF-16'; then
             echo "convertesc din UTF-16 in UTF-8"
             iconv -f UTF-16LE -t UTF-8 vili_defconfig > vili_utf8
@@ -63,20 +62,9 @@ jobs:
           fi
           sed -i '1s/^\xEF\xBB\xBF//' vili_defconfig
           sed -i 's/\r$//' vili_defconfig
-          echo "=== dupa normalizare ==="
           file vili_defconfig
           echo "linii: $(wc -l < vili_defconfig)"
-          echo "linii CONFIG: $(grep -c '^CONFIG_' vili_defconfig || true)"
-          echo "octeti NUL: $(tr -d '\0' < vili_defconfig | wc -c)"
-          if ! grep -q '^CONFIG_' vili_defconfig; then
-            echo "EROARE: config-ul nu e text ASCII valid"
-            exit 1
-          fi
-
-      - name: Pregateste config-ul
-        run: |
-          cp vili_defconfig kernel/arch/arm64/configs/vili_defconfig
-          cd kernel/arch/arm64/configs
+          echo "linii CONFIG active: $(grep -c '^CONFIG_' vili_defconfig)"
           sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
           sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' vili_defconfig
           sed -i 's|^CONFIG_MODVERSIONS=y|CONFIG_MODVERSIONS=n|' vili_defconfig
@@ -94,18 +82,25 @@ jobs:
           CONFIG_CRC_CCITT=y
           CONFIG_RTC_LIB=y
           EOF
+          echo "=== verificare config pregatit ==="
+          grep -E "^(# )?CONFIG_(LOCALVERSION|MODVERSIONS|ATH9K_HTC|RTL8187|RTC_LIB)" vili_defconfig
 
       - name: Build
         run: |
+          set -e
           cd kernel
           export PATH=/usr/lib/llvm-14/bin:$PATH
           export ARCH=arm64
           ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
-          make O=out $ARGS vili_defconfig
-          echo "=== verificare config generat ==="
+          echo "clang: $(clang --version | head -1)"
+          echo "nproc: $(nproc)"
+          mkdir -p out
+          cp ../vili_defconfig out/.config
+          make O=out $ARGS olddefconfig
+          echo "=== verificare config final ==="
           echo "linii .config: $(wc -l < out/.config)"
-          grep -E "^CONFIG_(LOCALVERSION|RTC_LIB|MODVERSIONS|ATH9K_HTC|RTL8187|WLAN_VENDOR_ATH)=" out/.config || true
-          echo "=== sfarsit verificare ==="
+          grep -E "^CONFIG_(LOCALVERSION|RTC_LIB|MODVERSIONS|ATH9K_HTC|RTL8187|WLAN_VENDOR_ATH|MAC80211|CFG80211)=" out/.config
+          echo "=== gata verificarea, incepe compilarea ==="
           make -j$(nproc) O=out $ARGS
 
       - name: Verifica rezultatul
