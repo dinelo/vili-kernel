@@ -8,11 +8,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Instaleaza dependinte
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
-            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu zip kmod
+            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu zip kmod curl
 
       - name: Cloneaza sursa Xiaomi
         run: |
@@ -24,8 +27,18 @@ jobs:
           git clone --depth 1 -b v5.4.86 \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git mainline
 
+      - name: Descarca firmware ath9k_htc
+        run: |
+          mkdir -p firmware
+          curl -fL -o firmware/htc_9271-1.4.0.fw \
+            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw"
+          curl -fL -o firmware/htc_7010-1.4.0.fw \
+            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_7010-1.4.0.fw"
+          ls -la firmware/
+
       - name: Adauga driverele ath9k_htc si rtl8187
         run: |
+          set -e
           ML="$GITHUB_WORKSPACE/mainline/drivers/net/wireless"
           WL="$GITHUB_WORKSPACE/kernel/drivers/net/wireless"
           cp -r "$ML/ath" "$WL/"
@@ -41,6 +54,8 @@ jobs:
 
       - name: Pregateste config-ul
         run: |
+          set -e
+          ls -la vili_defconfig
           cp vili_defconfig kernel/arch/arm64/configs/vili_defconfig
           cd kernel/arch/arm64/configs
           sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
@@ -50,6 +65,7 @@ jobs:
           CONFIG_WLAN_VENDOR_ATH=y
           CONFIG_WLAN_VENDOR_REALTEK=y
           CONFIG_ATH9K_HTC=m
+          CONFIG_ATH9K_HTC_DEBUGFS=y
           CONFIG_ATH9K_HW=m
           CONFIG_ATH9K_COMMON=m
           CONFIG_ATH_COMMON=m
@@ -68,12 +84,15 @@ jobs:
           make O=out $ARGS vili_defconfig
           make -j$(nproc) O=out $ARGS
 
-      - name: Verifica vermagic
+      - name: Verifica rezultatul
         run: |
           cd kernel
+          echo "=== vermagic ==="
           find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" | while read m; do
             echo "--- $m"; modinfo "$m" | grep -i vermagic
           done
+          echo "=== continut boot ==="
+          ls -la out/arch/arm64/boot/ | head -20
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -83,3 +102,4 @@ jobs:
             kernel/out/arch/arm64/boot/Image*
             kernel/out/arch/arm64/boot/dts/**/*.dtb
             kernel/out/drivers/net/wireless/**/*.ko
+            firmware/*.fw
