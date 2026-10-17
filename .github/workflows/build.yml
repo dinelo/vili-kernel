@@ -179,6 +179,10 @@ jobs:
           add_cfg 'CONFIG_MODULES=y'
           add_cfg 'CONFIG_MODULE_SIG=n'
           add_cfg 'CONFIG_MODULE_SIG_FORCE=n'
+          # Pastram MODVERSIONS (modulele vendor). Cu LLD pe aarch64,
+          # CRC-urile absolute dau R_AARCH64_ABS32 -> folosim CRC relative.
+          add_cfg 'CONFIG_MODVERSIONS=y'
+          add_cfg 'CONFIG_MODULE_REL_CRCS=y'
 
           add_cfg "CONFIG_LOCALVERSION=\"${LOCALVERSION_STR}\""
           sed -i '/^CONFIG_LOCALVERSION_AUTO=y/d' out/.config
@@ -194,7 +198,7 @@ jobs:
                    CONFIG_WLAN_VENDOR_ATH CONFIG_WLAN_VENDOR_REALTEK \
                    CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_EEPROM_93CX6 \
                    CONFIG_RTC_LIB CONFIG_MODULES CONFIG_MODULE_SIG \
-                   CONFIG_MODVERSIONS CONFIG_LOCALVERSION; do
+                   CONFIG_MODVERSIONS CONFIG_MODULE_REL_CRCS CONFIG_LOCALVERSION; do
             printf '%-32s %s\n' "$o" "$(grep -E "^${o}[= ]" out/.config || echo 'LIPSA/default')"
           done
           grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo 'EROARE: ath9k_htc nu e modul'; exit 1; }
@@ -202,13 +206,15 @@ jobs:
       # Compilam DOAR Image + modules (NU dtbs) -> pastram DTB/DTBO stock.
       - name: Build kernel (Image + module)
         run: |
-          set -e
+          set -euo pipefail
           cd kernel
           export KCFLAGS="-Wno-error -I$PWD/techpack/audio/include -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
           echo "KCFLAGS=$KCFLAGS"
+          # pipefail: daca make crapa, pasul e rosu (nu doar tee=ok)
           make $ARGS -j"$(nproc)" Image modules 2>&1 | tee build.log
           echo "--- erori gasite: $(grep -c 'error:' build.log || true) ---"
           grep -n 'error:' build.log | head -40 || true
+          test -s out/arch/arm64/boot/Image || { echo 'EROARE: Image lipsa dupa make'; exit 1; }
 
       - name: Pregateste AnyKernel3
         if: always()
@@ -279,7 +285,12 @@ jobs:
           ok=1
           [ -s artifact/Image ]        || { echo 'LIPSA Image';        ok=0; }
           [ -s artifact/ath9k_htc.ko ] || { echo 'LIPSA ath9k_htc.ko'; ok=0; }
-          [ "$ok" = 1 ] && echo 'OK: artefact complet' || echo 'BUILD INCOMPLET (vezi build.log)'
+          if [ "$ok" = 1 ]; then
+            echo 'OK: artefact complet'
+          else
+            echo 'BUILD INCOMPLET (vezi build.log)'
+            exit 1
+          fi
 
       - name: Salveaza build.log
         if: always()
