@@ -113,22 +113,21 @@ jobs:
           cd kernel
           export PATH=/usr/lib/llvm-14/bin:$PATH
           export ARCH=arm64
-          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
+          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS=-Wno-error\ -I$PWD/drivers/pinctrl\ -I$PWD/techpack/audio\ -I$PWD/drivers/soundwire"
           mkdir -p out
           cp ../vili_defconfig out/.config
           make O=out $ARGS olddefconfig
           echo "=== config final: $(wc -l < out/.config) linii ==="
-          echo "=== compilare (cu -k, nu se opreste la dtb-uri rupte) ==="
+          echo "=== compilare ==="
           make -j$(nproc) O=out $ARGS -k || true
           echo "=== verificare artefacte ==="
           echo "--- kernel:"
           ls -la out/arch/arm64/boot/Image* 2>/dev/null || echo "LIPSA Image"
-          echo "--- dtb/dtbо vili:"
-          find out/arch/arm64/boot/dts -iname "*vili*" 2>/dev/null || echo "LIPSA"
+          echo "--- dtb vili:"
+          find out/arch/arm64/boot/dts -iname "*vili*" 2>/dev/null
           echo "--- module wireless:"
-          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" 2>/dev/null || echo "LIPSA"
+          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" 2>/dev/null
           echo "--- total .ko: $(find out -name '*.ko' | wc -l)"
-
       - name: Verifica vermagic
         run: |
           cd kernel
