@@ -46,19 +46,15 @@ jobs:
           cd fork
           git sparse-checkout set arch/arm64/boot/dts/vendor/qcom include/dt-bindings
           cd ..
-          # completeaza doar ce lipseste (ex. display/) fara sa suprascrie MiCode
           cp -rn fork/arch/arm64/boot/dts/vendor/qcom/. kernel/arch/arm64/boot/dts/vendor/qcom/
-          # dt-bindings trebuie suprascrise (MiCode e mai vechi, lipsesc macro-uri)
           cp -rf fork/include/dt-bindings/. kernel/include/dt-bindings/
 
-      # ------------------------------------------- REPARARE SYMLINK-URI (fix nou)
       - name: Repara symlink-urile rupte din techpack (layout AOSP kernel/msm-5.4)
         run: |
           cd kernel
           reparate=0
           while IFS= read -r link; do
             tinta="$(readlink "$link")" || continue
-            # linkurile MiCode arata spre ../../../../../kernel/msm-5.4/<cale>
             cale="${tinta#*kernel/msm-5.4/}"
             [ "$cale" = "$tinta" ] && continue
             if [ -e "$cale" ]; then
@@ -71,7 +67,6 @@ jobs:
           done < <(find . -xtype l)
           echo "=== symlink-uri reparate: $reparate ==="
           echo "=== rupte ramase: $(find . -xtype l | wc -l) ==="
-          find . -xtype l | head -20
 
       # -------------------------------------------------------------- dependinte
       - name: Instaleaza dependintele
@@ -96,7 +91,6 @@ jobs:
           [ -n "$SRC_DEF" ] || { echo "NU GASESC vili_defconfig in repo"; exit 1; }
           echo "defconfig sursa: $SRC_DEF"
 
-          # PowerShell scrie UTF-16LE cu CRLF -> normalizeaza la UTF-8 fara BOM/CR
           if head -c 2 "$SRC_DEF" | od -An -tx1 | grep -qi 'ff fe'; then
             iconv -f UTF-16LE -t UTF-8 "$SRC_DEF" > /tmp/dc.raw
           elif head -c 2 "$SRC_DEF" | od -An -tx1 | grep -qi 'fe ff'; then
@@ -110,49 +104,76 @@ jobs:
           install -m 644 /tmp/dc.clean arch/arm64/configs/vili_defconfig
           echo "linii in defconfig: $(wc -l < arch/arm64/configs/vili_defconfig)"
 
-          # genereaza .config
           make $ARGS vili_defconfig
 
-          # forteaza optiunile obligatorii (fara duplicate)
+          # sterge AMBELE forme (CONFIG_X=... si "# CONFIG_X is not set") ca sa nu
+          # ramana duplicate -> fara warning-uri "override: reassigning"
           add_cfg() {
-            local opt="${1%%=*}"
-            sed -i "\|^${opt}=|d" out/.config
-            printf '%s\n' "$1" >> out/.config
+            local sym="${1%%=*}"
+            local val="${1#*=}"
+            sed -i -e "/^${sym}=/d" -e "/^# ${sym} is not set/d" out/.config
+            printf '%s=%s\n' "$sym" "$val" >> out/.config
           }
+
+          # --- gate-uri obligatorii: fara ele simbolurile de mai jos NU EXISTA
+          add_cfg CONFIG_WLAN=y
+          add_cfg CONFIG_WLAN_VENDOR_ATH=y
+          add_cfg CONFIG_WLAN_VENDOR_REALTEK=y
+          add_cfg CONFIG_CFG80211=y
+          add_cfg CONFIG_MAC80211=y
+          add_cfg CONFIG_USB_SUPPORT=y
+          add_cfg CONFIG_DEBUG_FS=y
+
+          # --- drivere
+          add_cfg CONFIG_ATH9K_HTC=m
+          add_cfg CONFIG_ATH9K_HTC_DEBUGFS=y
+          add_cfg CONFIG_RTL8187=m
+          add_cfg CONFIG_EEPROM_93CX6=m
+
+          # --- restul
           add_cfg CONFIG_RTC_LIB=y
           add_cfg CONFIG_BUILD_ARM64_DT_OVERLAY=y
           add_cfg CONFIG_OF_OVERLAY=y
           add_cfg CONFIG_MODULES=y
           add_cfg CONFIG_MODULE_SIG=n
-          add_cfg CONFIG_CFG80211=m
-          add_cfg CONFIG_MAC80211=m
-          add_cfg CONFIG_ATH9K_HTC=m
-          add_cfg CONFIG_ATH9K_HTC_DEBUGFS=y
-          add_cfg CONFIG_RTL8187=m
-          add_cfg CONFIG_EEPROM_93CX6=m
           add_cfg 'CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"'
 
           make $ARGS olddefconfig
 
-      - name: Verificare config
+      - name: Verificare config (ne-fatal)
         run: |
           cd kernel
-          for o in CONFIG_ARM64 CONFIG_BUILD_ARM64_DT_OVERLAY CONFIG_OF_OVERLAY \
-                   CONFIG_MODULES CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_RTC_LIB \
-                   CONFIG_LOCALVERSION; do
-            printf '%-38s %s\n' "$o" "$(grep -E "^${o}=" out/.config || echo 'LIPSA')"
+          echo "=== stare simboli ==="
+          for o in CONFIG_WLAN CONFIG_WLAN_VENDOR_ATH CONFIG_WLAN_VENDOR_REALTEK \
+                   CONFIG_CFG80211 CONFIG_MAC80211 CONFIG_USB CONFIG_USB_SUPPORT \
+                   CONFIG_ATH9K_HTC CONFIG_ATH9K_HTC_DEBUGFS CONFIG_RTL8187 \
+                   CONFIG_EEPROM_93CX6 CONFIG_RTC_LIB CONFIG_MODULES \
+                   CONFIG_BUILD_ARM64_DT_OVERLAY CONFIG_OF_OVERLAY CONFIG_LOCALVERSION; do
+            printf '%-34s %s\n' "$o" "$(grep -E "^${o}=" out/.config || echo '*** LIPSA ***')"
           done
-          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' out/.config || { echo "EROARE: overlay dezactivat"; exit 1; }
-          grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo "EROARE: ath9k_htc nu e modul"; exit 1; }
-          grep -q '^CONFIG_RTL8187=m' out/.config || { echo "EROARE: rtl8187 nu e modul"; exit 1; }
+
+          echo
+          echo "=== diagnostic Kconfig (dependinte) ==="
+          ls -d drivers/net/wireless/ath/ath9k drivers/net/wireless/realtek/rtl818x/rtl8187 2>&1
+          sed -n '/^config ATH9K_HTC$/,/^config /p' drivers/net/wireless/ath/ath9k/Kconfig | head -8
+          sed -n '/^config RTL8187$/,/^config /p' drivers/net/wireless/realtek/rtl818x/Kconfig | head -6
+          echo "MAC80211 definit: $(grep -c '^config MAC80211$' net/mac80211/Kconfig)"
+
+          echo
+          echo "=== verdicte ==="
+          for o in CONFIG_WLAN CONFIG_WLAN_VENDOR_ATH CONFIG_WLAN_VENDOR_REALTEK \
+                   CONFIG_ATH9K_HTC CONFIG_RTL8187; do
+            grep -q "^${o}=" out/.config || echo "AVERTISMENT: $o lipseste"
+          done
+          echo "gata (ne-fatal, build-ul ruleaza oricum)"
 
       # ------------------------------------------------------------------- build
       - name: Build kernel
+        if: always()
         run: |
           cd kernel
           export KCFLAGS="-Wno-error -I$PWD/techpack/audio/include -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
           echo "KCFLAGS=$KCFLAGS"
-          # -k = aduna toate erorile; verdictul il da pasul de verificare
           make $ARGS -j"$(nproc)" -k 2>&1 | tee build.log || true
           echo "--- erori gasite: $(grep -c 'error:' build.log || true) ---"
           grep -n "error:" build.log | head -40 || true
@@ -178,9 +199,19 @@ jobs:
           echo "total .ko: $(ls ../artifact/modules | wc -l)"
           echo "dtbo: $(ls ../artifact/*.dtbo 2>/dev/null | wc -l)"
 
-          curl -fsSL -o ../artifact/firmware/htc_9271-1.4.0.fw \
-            https://raw.githubusercontent.com/armbian/firmware/master/htc_9271-1.4.0.fw \
-            || echo "fw htc_9271 nu s-a descarcat"
+          fwok=0
+          for u in \
+            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/htc_9271.fw" \
+            "https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/htc_9271.fw" \
+            "https://raw.githubusercontent.com/armbian/firmware/master/htc_9271.fw"; do
+            if curl -fsSL -o /tmp/htc.fw "$u" && [ "$(stat -c%s /tmp/htc.fw 2>/dev/null || echo 0)" -gt 10000 ]; then
+              cp /tmp/htc.fw ../artifact/firmware/htc_9271.fw
+              echo "fw descarcat din: $u"
+              fwok=1
+              break
+            fi
+          done
+          [ "$fwok" = "1" ] || echo "AVERTISMENT: fw htc_9271 nu s-a descarcat"
 
           du -sh ../artifact
 
@@ -189,13 +220,13 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           ok=1
-          [ -s artifact/Image ]                        || { echo "LIPSA Image"; ok=0; }
-          [ -s artifact/lahaina.dtb ]                  || { echo "LIPSA lahaina.dtb"; ok=0; }
-          ls artifact/*vili*overlay*.dtbo >/dev/null 2>&1 || { echo "LIPSA vili-sm8350-overlay.dtbo"; ok=0; }
-          [ -s artifact/modules/ath9k_htc.ko ]         || { echo "LIPSA ath9k_htc.ko"; ok=0; }
-          [ -s artifact/modules/rtl8187.ko ]           || { echo "LIPSA rtl8187.ko"; ok=0; }
+          [ -s artifact/Image ]                            || { echo "LIPSA Image"; ok=0; }
+          [ -s artifact/lahaina.dtb ]                      || { echo "LIPSA lahaina.dtb"; ok=0; }
+          ls artifact/*vili*overlay*.dtbo >/dev/null 2>&1  || { echo "LIPSA vili-sm8350-overlay.dtbo"; ok=0; }
+          [ -s artifact/modules/ath9k_htc.ko ]             || { echo "LIPSA ath9k_htc.ko"; ok=0; }
+          [ -s artifact/modules/rtl8187.ko ]               || { echo "LIPSA rtl8187.ko"; ok=0; }
           echo "--- continut artifact ---"
-          ls -lR artifact | head -60
+          ls -lR artifact | head -80
           [ "$ok" = "1" ] || { echo "BUILD INCOMPLET"; exit 1; }
           echo "OK: artefact complet"
 
