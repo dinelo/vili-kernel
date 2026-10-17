@@ -170,6 +170,9 @@ jobs:
           install -m644 /tmp/dc.clean arch/arm64/configs/vili_defconfig
           echo "linii in defconfig: $(wc -l < arch/arm64/configs/vili_defconfig)"
 
+          # FIX: fara asta setlocalversion adauga "+" (checkout git modificat)
+          # -> release 5.4.86-qgki-...+ != stock -> modulele vendor refuzate.
+          : > .scmversion
           make $ARGS vili_defconfig
 
           add_cfg() {
@@ -235,6 +238,9 @@ jobs:
           echo "--- 'not found' in build.log: $(grep -c 'not found' build.log || true) ---"
           echo "--- version generation failed: $(grep -c 'version generation failed' build.log || true) ---"
           test -s out/arch/arm64/boot/Image || { echo 'EROARE: Image lipsa dupa make'; exit 1; }
+          REL="$(cat out/include/config/kernel.release)"
+          echo "kernel.release = $REL"
+          [ "$REL" = "5.4.86${LOCALVERSION_STR}" ] || { echo "EROARE: release '$REL' difera de stock 5.4.86${LOCALVERSION_STR}"; exit 1; }
 
       - name: Pregateste AnyKernel3
         if: always()
