@@ -133,6 +133,20 @@ jobs:
           echo "ath9k prezent:   $(ls -d "$WL/ath/ath9k" 2>/dev/null || echo NU)"
           echo "rtl8187 prezent: $(ls -d "$WL/realtek/rtl818x/rtl8187" 2>/dev/null || echo NU)"
 
+      # FIX: CONFIG_DEBUG_POWER_MI=y (stock) foloseste "extern int qrtr_first_msg"
+      # definit in cod Xiaomi nepublicat -> "undefined symbol: qrtr_first_msg"
+      # la link vmlinux. Il definim in qrtr.c (config ramane identic cu stock).
+      - name: Repara simboluri lipsa din sursa MiCode (qrtr_first_msg)
+        run: |
+          set -e
+          cd kernel
+          if grep -q 'extern int qrtr_first_msg' net/qrtr/qrtr.h && \
+             ! grep -rqE '^int qrtr_first_msg' net/ kernel/ drivers/ 2>/dev/null; then
+            printf '\n#ifdef CONFIG_DEBUG_POWER_MI\nint qrtr_first_msg = 1;\n#endif\n' >> net/qrtr/qrtr.c
+            echo "definit qrtr_first_msg in net/qrtr/qrtr.c"
+          fi
+          tail -5 net/qrtr/qrtr.c
+
       - name: Pregateste config-ul (normalizare + optiuni)
         run: |
           set -e
