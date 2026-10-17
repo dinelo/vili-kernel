@@ -1,4 +1,4 @@
-name: Build vili NetHunter kernel
+name: Build kernel vili
 
 on:
   workflow_dispatch:
@@ -6,142 +6,139 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 360
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Instaleaza dependinte
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
-            clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu zip kmod curl
+            build-essential git zip python3 device-tree-compiler \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            clang-14 lld-14 llvm-14 libc6-dev-i386 cpio kmod rsync
 
-      - name: Cloneaza sursa Xiaomi
+      - name: Clone sursa kernel
         run: |
-          git clone --depth 1 -b vili-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git kernel
+          set -e
+          git clone --depth 1 --branch vili-r-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource kernel
+          cd kernel
+          echo "commit sursa: $(git rev-parse --short HEAD)"
 
-      - name: Cloneaza mainline 5.4.86
+      - name: Aduce fisierele lipsa din fork
         run: |
-          git clone --depth 1 -b v5.4.86 \
-            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git mainline
-
-      - name: Cloneaza dtsi-urile lipsa
-        run: |
-          git clone --depth 1 --filter=blob:none --sparse \
-            https://github.com/Spanish-or-Vanish/kernel_xiaomi_sm8350.git sm8350tree
-          cd sm8350tree
-          git sparse-checkout set arch/arm64/boot/dts/vendor/qcom
+          set -e
+          git clone --filter=blob:none --sparse --depth 1 \
+            --branch lineage-24.0 \
+            https://github.com/Spanish-or-Vanish/kernel_xiaomi_sm8350 fork
+          cd fork
+          git sparse-checkout set arch/arm64/boot/dts/vendor/qcom include/dt-bindings
           cd ..
-          du -sh sm8350tree
+          cp -rn fork/arch/arm64/boot/dts/vendor/qcom/. kernel/arch/arm64/boot/dts/vendor/qcom/
+          cp -rf fork/include/dt-bindings/. kernel/include/dt-bindings/
+          echo "=== display/ ==="
+          ls kernel/arch/arm64/boot/dts/vendor/qcom/display/ | wc -l
+          echo "=== GCC_EDP_CLKREF_EN in header ==="
+          grep -c GCC_EDP_CLKREF_EN kernel/include/dt-bindings/clock/qcom,gcc-yupik.h
 
-      - name: Descarca firmware ath9k_htc
-        run: |
-          mkdir -p firmware
-          curl -fL -o firmware/htc_9271-1.4.0.fw \
-            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_9271-1.4.0.fw"
-          curl -fL -o firmware/htc_7010-1.4.0.fw \
-            "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath9k_htc/htc_7010-1.4.0.fw"
-          ls -la firmware/
-
-      - name: Adauga driverele ath9k_htc si rtl8187
+      - name: Pregatire config
         run: |
           set -e
-          ML="$GITHUB_WORKSPACE/mainline/drivers/net/wireless"
-          WL="$GITHUB_WORKSPACE/kernel/drivers/net/wireless"
-          cp -r "$ML/ath" "$WL/"
-          mkdir -p "$WL/realtek"
-          cp -r "$ML/realtek/rtl818x" "$WL/realtek/"
-          cd "$WL"
-          grep -q 'wireless/ath/Kconfig' Kconfig || echo 'source "drivers/net/wireless/ath/Kconfig"' >> Kconfig
-          grep -q 'WLAN_VENDOR_ATH' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_ATH) += ath/' >> Makefile
-          grep -q 'realtek/rtl818x/Kconfig' Kconfig || echo 'source "drivers/net/wireless/realtek/rtl818x/Kconfig"' >> Kconfig
-          touch realtek/Makefile
-          grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
-          grep -q 'realtek/' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/' >> Makefile
-
-      - name: Completeaza dts-urile lipsa
-        run: |
-          SRCQ="$GITHUB_WORKSPACE/sm8350tree/arch/arm64/boot/dts/vendor/qcom"
-          DSTQ="$GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/vendor/qcom"
-          echo "=== subfoldere lipsa in sursa Xiaomi ==="
-          for d in "$SRCQ"/*/; do
-            name=$(basename "$d")
-            if [ ! -d "$DSTQ/$name" ]; then
-              echo "copiez: $name"
-              cp -rn "$d" "$DSTQ/"
-            else
-              echo "exista deja: $name"
-            fi
-          done
-          echo "=== continut dupa completare ==="
-          ls -la "$DSTQ" | head -30
-          echo "=== verificare lahaina-sde.dtsi ==="
-          ls -la "$DSTQ/display/lahaina-sde.dtsi" || echo "LIPSA!"
-
-      - name: Normalizeaza config-ul
-        run: |
-          set -e
-          if file vili_defconfig | grep -qi 'UTF-16'; then
-            iconv -f UTF-16LE -t UTF-8 vili_defconfig > vili_utf8
-            mv vili_utf8 vili_defconfig
+          cd kernel
+          mkdir -p out
+          if file ../vili_defconfig | grep -qi utf-16; then
+            iconv -f UTF-16LE -t UTF-8 ../vili_defconfig > out/.config
+          else
+            cp ../vili_defconfig out/.config
           fi
-          sed -i '1s/^\xEF\xBB\xBF//' vili_defconfig
-          sed -i 's/\r$//' vili_defconfig
-          file vili_defconfig
-          echo "linii CONFIG active: $(grep -c '^CONFIG_' vili_defconfig)"
-          sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
-          sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' vili_defconfig
-          sed -i 's|^CONFIG_MODVERSIONS=y|CONFIG_MODVERSIONS=n|' vili_defconfig
-          cat >> vili_defconfig <<'EOF'
-          CONFIG_WLAN_VENDOR_ATH=y
+          sed -i 's/\r$//' out/.config
+          sed -i '1s/^\xEF\xBB\xBF//' out/.config
+
+          cat >> out/.config <<'EOF'
+
+          # --- adaugari vili-nethunter-kernel ---
           CONFIG_ATH9K_HTC=m
           CONFIG_ATH9K_HTC_DEBUGFS=y
-          CONFIG_ATH9K_HW=m
-          CONFIG_ATH9K_COMMON=m
-          CONFIG_ATH_COMMON=m
           CONFIG_RTL8187=m
           CONFIG_EEPROM_93CX6=m
-          CONFIG_AVERAGE=y
-          CONFIG_CRC_CCITT=y
           CONFIG_RTC_LIB=y
+          CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          CONFIG_OF_OVERLAY=y
+          CONFIG_MODVERSIONS=n
+          # --- sfarsit adaugari ---
           EOF
 
-      - name: Build
+          echo "=== config pregatit: $(wc -l < out/.config) linii ==="
+          grep -c '^CONFIG_' out/.config || true
+
+      - name: Verificare config aplicat
         run: |
+          set -e
+          cd kernel
+          export PATH=/usr/lib/llvm-14/bin:$PATH
+          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
+          make O=out $ARGS olddefconfig
+          echo "=== config final: $(wc -l < out/.config) linii ==="
+          echo "--- verificari obligatorii ---"
+          for opt in CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_RTC_LIB CONFIG_BUILD_ARM64_DT_OVERLAY; do
+            if grep -q "^${opt}=" out/.config; then
+              grep "^${opt}=" out/.config
+            else
+              echo "!!! LIPSA ${opt} !!!"
+            fi
+          done
+
+      - name: Build kernel
+        run: |
+          set -e
           cd kernel
           export PATH=/usr/lib/llvm-14/bin:$PATH
           export ARCH=arm64
-          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS=-Wno-error\ -I$PWD/drivers/pinctrl\ -I$PWD/techpack/audio\ -I$PWD/drivers/soundwire"
-          mkdir -p out
-          cp ../vili_defconfig out/.config
-          make O=out $ARGS olddefconfig
-          echo "=== config final: $(wc -l < out/.config) linii ==="
-          echo "=== compilare ==="
-          make -j$(nproc) O=out $ARGS -k || true
-          echo "=== verificare artefacte ==="
-          echo "--- kernel:"
-          ls -la out/arch/arm64/boot/Image* 2>/dev/null || echo "LIPSA Image"
-          echo "--- dtb vili:"
-          find out/arch/arm64/boot/dts -iname "*vili*" 2>/dev/null
-          echo "--- module wireless:"
-          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" 2>/dev/null
-          echo "--- total .ko: $(find out -name '*.ko' | wc -l)"
-      - name: Verifica vermagic
-        run: |
-          cd kernel
-          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" | while read m; do
-            echo "--- $m"; modinfo "$m" | grep -i vermagic || true
-          done
+          export LC_ALL=C
+          export KCFLAGS="-Wno-error -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
+          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
 
-      - name: Upload
+          echo "clang: $(clang --version | head -1)"
+          echo "nproc: $(nproc)"
+          echo "=== incepe compilarea ==="
+          make -j$(nproc) O=out $ARGS -k || true
+
+          echo ""
+          echo "=== verificare artefacte ==="
+          ls -la out/arch/arm64/boot/Image 2>/dev/null || echo "LIPSA Image"
+          ls -la out/arch/arm64/boot/dts/vendor/qcom/lahaina.dtb 2>/dev/null || echo "LIPSA lahaina.dtb"
+          ls -la out/arch/arm64/boot/dts/vendor/qcom/vili-sm8350-overlay.dtbo 2>/dev/null || echo "LIPSA overlay vili"
+          echo "--- module wireless ---"
+          find out -name 'ath9k_htc.ko' -o -name 'rtl8187.ko' -o -name 'eeprom_93cx6.ko'
+          echo "--- total .ko: $(find out -name '*.ko' | wc -l) ---"
+
+      - name: Colectare artefacte
+        run: |
+          set -e
+          mkdir -p artifact/modules
+          cd kernel
+
+          cp out/arch/arm64/boot/Image artifact/ 2>/dev/null || echo "fara Image"
+          cp out/arch/arm64/boot/dts/vendor/qcom/lahaina*.dtb artifact/ 2>/dev/null || true
+          cp out/arch/arm64/boot/dts/vendor/qcom/vili-sm8350-overlay.dtbo artifact/ 2>/dev/null || true
+
+          find out -name '*.ko' -exec cp {} artifact/modules/ \; 2>/dev/null || true
+
+          cd ..
+          echo "=== continut artefact ==="
+          ls -la artifact/
+          echo "module: $(ls artifact/modules | wc -l)"
+          echo "dtb/dtbо vili: $(ls artifact | grep -ci vili || true)"
+          du -sh artifact/
+
+      - name: Upload artefact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-build
-          path: |
-            kernel/out/arch/arm64/boot/Image*
-            kernel/out/arch/arm64/boot/dts/**/*.dtb
-            kernel/out/arch/arm64/boot/dts/**/*.dtbo
-            kernel/out/drivers/net/wireless/**/*.ko
-            firmware/*.fw
+          path: artifact/
+          if-no-files-found: warn
+          retention-days: 14
