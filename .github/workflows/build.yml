@@ -1,144 +1,208 @@
-name: Build kernel vili
+name: Build kernel vili (NetHunter)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  ARGS: >-
+    O=out ARCH=arm64
+    CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14
+    OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14
+    READELF=llvm-readelf-14 STRIP=llvm-strip-14
+    HOSTCC=clang-14 HOSTCXX=clang++-14 HOSTAR=llvm-ar-14 HOSTLD=ld.lld-14
+    CLANG_TRIPLE=aarch64-linux-gnu-
+    CROSS_COMPILE=aarch64-linux-gnu-
+    CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 jobs:
   build:
+    name: Build kernel
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout repo
+      # ------------------------------------------------------------------ surse
+      - name: Checkout repo (workflow + vili_defconfig)
         uses: actions/checkout@v4
 
-      - name: Instaleaza dependinte
-        run: |
-          set -e
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
-            build-essential git zip python3 device-tree-compiler \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            clang-14 lld-14 llvm-14 libc6-dev-i386 cpio kmod rsync
+      - name: Checkout sursa kernel MiCode (vili-r-oss)
+        uses: actions/checkout@v4
+        with:
+          repository: MiCode/Xiaomi_Kernel_OpenSource
+          ref: vili-r-oss
+          path: kernel
+          fetch-depth: 1
 
-      - name: Clone sursa kernel
+      - name: Checkout selectiv sursa secundara (DTS/display + dt-bindings)
         run: |
-          set -e
-          git clone --depth 1 --branch vili-r-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource kernel
-          cd kernel
-          echo "commit sursa: $(git rev-parse --short HEAD)"
-
-      - name: Aduce fisierele lipsa din fork
-        run: |
-          set -e
           git clone --filter=blob:none --sparse --depth 1 \
-            --branch lineage-24.0 \
-            https://github.com/Spanish-or-Vanish/kernel_xiaomi_sm8350 fork
+            -b lineage-24.0 \
+            https://github.com/Spanish-or-Vanish/kernel_xiaomi_sm8350.git fork
           cd fork
           git sparse-checkout set arch/arm64/boot/dts/vendor/qcom include/dt-bindings
           cd ..
+          # completeaza doar ce lipseste (ex. display/) fara sa suprascrie MiCode
           cp -rn fork/arch/arm64/boot/dts/vendor/qcom/. kernel/arch/arm64/boot/dts/vendor/qcom/
+          # dt-bindings trebuie suprascrise (MiCode e mai vechi, lipsesc macro-uri)
           cp -rf fork/include/dt-bindings/. kernel/include/dt-bindings/
-          echo "=== display/ ==="
-          ls kernel/arch/arm64/boot/dts/vendor/qcom/display/ | wc -l
-          echo "=== GCC_EDP_CLKREF_EN in header ==="
-          grep -c GCC_EDP_CLKREF_EN kernel/include/dt-bindings/clock/qcom,gcc-yupik.h
 
-      - name: Pregatire config
+      # ------------------------------------------- REPARARE SYMLINK-URI (fix nou)
+      - name: Repara symlink-urile rupte din techpack (layout AOSP kernel/msm-5.4)
         run: |
-          set -e
           cd kernel
-          mkdir -p out
-          if file ../vili_defconfig | grep -qi utf-16; then
-            iconv -f UTF-16LE -t UTF-8 ../vili_defconfig > out/.config
-          else
-            cp ../vili_defconfig out/.config
-          fi
-          sed -i 's/\r$//' out/.config
-          sed -i '1s/^\xEF\xBB\xBF//' out/.config
-
-          cat >> out/.config <<'EOF'
-
-          # --- adaugari vili-nethunter-kernel ---
-          CONFIG_ATH9K_HTC=m
-          CONFIG_ATH9K_HTC_DEBUGFS=y
-          CONFIG_RTL8187=m
-          CONFIG_EEPROM_93CX6=m
-          CONFIG_RTC_LIB=y
-          CONFIG_BUILD_ARM64_DT_OVERLAY=y
-          CONFIG_OF_OVERLAY=y
-          CONFIG_MODVERSIONS=n
-          # --- sfarsit adaugari ---
-          EOF
-
-          echo "=== config pregatit: $(wc -l < out/.config) linii ==="
-          grep -c '^CONFIG_' out/.config || true
-
-      - name: Verificare config aplicat
-        run: |
-          set -e
-          cd kernel
-          export PATH=/usr/lib/llvm-14/bin:$PATH
-          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
-          make O=out $ARGS olddefconfig
-          echo "=== config final: $(wc -l < out/.config) linii ==="
-          echo "--- verificari obligatorii ---"
-          for opt in CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_RTC_LIB CONFIG_BUILD_ARM64_DT_OVERLAY; do
-            if grep -q "^${opt}=" out/.config; then
-              grep "^${opt}=" out/.config
+          reparate=0
+          while IFS= read -r link; do
+            tinta="$(readlink "$link")" || continue
+            # linkurile MiCode arata spre ../../../../../kernel/msm-5.4/<cale>
+            cale="${tinta#*kernel/msm-5.4/}"
+            [ "$cale" = "$tinta" ] && continue
+            if [ -e "$cale" ]; then
+              rm -f "$link"
+              cp -f "$cale" "$link"
+              reparate=$((reparate + 1))
             else
-              echo "!!! LIPSA ${opt} !!!"
+              echo "NU AM GASIT: $cale  (pentru $link)"
             fi
-          done
+          done < <(find . -xtype l)
+          echo "=== symlink-uri reparate: $reparate ==="
+          echo "=== rupte ramase: $(find . -xtype l | wc -l) ==="
+          find . -xtype l | head -20
 
+      # -------------------------------------------------------------- dependinte
+      - name: Instaleaza dependintele
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison flex build-essential libssl-dev libelf-dev libncurses-dev \
+            python3 python3-pip zip unzip cpio kmod rsync git curl ca-certificates \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      # ------------------------------------------------------------------ config
+      - name: Pregatire config (normalizare UTF-16 -> UTF-8 + optiuni obligatorii)
+        run: |
+          set -e
+          cd kernel
+
+          SRC_DEF=""
+          for p in ../vili_defconfig ../config/vili_defconfig vili_defconfig; do
+            if [ -f "$p" ]; then SRC_DEF="$p"; break; fi
+          done
+          [ -n "$SRC_DEF" ] || { echo "NU GASESC vili_defconfig in repo"; exit 1; }
+          echo "defconfig sursa: $SRC_DEF"
+
+          # PowerShell scrie UTF-16LE cu CRLF -> normalizeaza la UTF-8 fara BOM/CR
+          if head -c 2 "$SRC_DEF" | od -An -tx1 | grep -qi 'ff fe'; then
+            iconv -f UTF-16LE -t UTF-8 "$SRC_DEF" > /tmp/dc.raw
+          elif head -c 2 "$SRC_DEF" | od -An -tx1 | grep -qi 'fe ff'; then
+            iconv -f UTF-16BE -t UTF-8 "$SRC_DEF" > /tmp/dc.raw
+          else
+            cp "$SRC_DEF" /tmp/dc.raw
+          fi
+          sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' /tmp/dc.raw | tr -d '\000' > /tmp/dc.clean
+          grep -q '^CONFIG_' /tmp/dc.clean || cp "$SRC_DEF" /tmp/dc.clean
+
+          install -m 644 /tmp/dc.clean arch/arm64/configs/vili_defconfig
+          echo "linii in defconfig: $(wc -l < arch/arm64/configs/vili_defconfig)"
+
+          # genereaza .config
+          make $ARGS vili_defconfig
+
+          # forteaza optiunile obligatorii (fara duplicate)
+          add_cfg() {
+            local opt="${1%%=*}"
+            sed -i "\|^${opt}=|d" out/.config
+            printf '%s\n' "$1" >> out/.config
+          }
+          add_cfg CONFIG_RTC_LIB=y
+          add_cfg CONFIG_BUILD_ARM64_DT_OVERLAY=y
+          add_cfg CONFIG_OF_OVERLAY=y
+          add_cfg CONFIG_MODULES=y
+          add_cfg CONFIG_MODULE_SIG=n
+          add_cfg CONFIG_CFG80211=m
+          add_cfg CONFIG_MAC80211=m
+          add_cfg CONFIG_ATH9K_HTC=m
+          add_cfg CONFIG_ATH9K_HTC_DEBUGFS=y
+          add_cfg CONFIG_RTL8187=m
+          add_cfg CONFIG_EEPROM_93CX6=m
+          add_cfg 'CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"'
+
+          make $ARGS olddefconfig
+
+      - name: Verificare config
+        run: |
+          cd kernel
+          for o in CONFIG_ARM64 CONFIG_BUILD_ARM64_DT_OVERLAY CONFIG_OF_OVERLAY \
+                   CONFIG_MODULES CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_RTC_LIB \
+                   CONFIG_LOCALVERSION; do
+            printf '%-38s %s\n' "$o" "$(grep -E "^${o}=" out/.config || echo 'LIPSA')"
+          done
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' out/.config || { echo "EROARE: overlay dezactivat"; exit 1; }
+          grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo "EROARE: ath9k_htc nu e modul"; exit 1; }
+          grep -q '^CONFIG_RTL8187=m' out/.config || { echo "EROARE: rtl8187 nu e modul"; exit 1; }
+
+      # ------------------------------------------------------------------- build
       - name: Build kernel
         run: |
-          set -e
           cd kernel
-          export PATH=/usr/lib/llvm-14/bin:$PATH
-          export ARCH=arm64
-          export LC_ALL=C
-          export KCFLAGS="-Wno-error -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
-          ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
+          export KCFLAGS="-Wno-error -I$PWD/techpack/audio/include -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
+          echo "KCFLAGS=$KCFLAGS"
+          # -k = aduna toate erorile; verdictul il da pasul de verificare
+          make $ARGS -j"$(nproc)" -k 2>&1 | tee build.log || true
+          echo "--- erori gasite: $(grep -c 'error:' build.log || true) ---"
+          grep -n "error:" build.log | head -40 || true
 
-          echo "clang: $(clang --version | head -1)"
-          echo "nproc: $(nproc)"
-          echo "=== incepe compilarea ==="
-          make -j$(nproc) O=out $ARGS -k || true
-
-          echo ""
-          echo "=== verificare artefacte ==="
-          ls -la out/arch/arm64/boot/Image 2>/dev/null || echo "LIPSA Image"
-          ls -la out/arch/arm64/boot/dts/vendor/qcom/lahaina.dtb 2>/dev/null || echo "LIPSA lahaina.dtb"
-          ls -la out/arch/arm64/boot/dts/vendor/qcom/vili-sm8350-overlay.dtbo 2>/dev/null || echo "LIPSA overlay vili"
-          echo "--- module wireless ---"
-          find out -name 'ath9k_htc.ko' -o -name 'rtl8187.ko' -o -name 'eeprom_93cx6.ko'
-          echo "--- total .ko: $(find out -name '*.ko' | wc -l) ---"
-
+      # ---------------------------------------------------------------- artefact
       - name: Colectare artefacte
+        if: always()
         run: |
-          set -e
-          mkdir -p artifact/modules
           cd kernel
+          rm -rf ../artifact
+          mkdir -p ../artifact/modules ../artifact/firmware
 
-          cp out/arch/arm64/boot/Image artifact/ 2>/dev/null || echo "fara Image"
-          cp out/arch/arm64/boot/dts/vendor/qcom/lahaina*.dtb artifact/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dts/vendor/qcom/vili-sm8350-overlay.dtbo artifact/ 2>/dev/null || true
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp -v out/arch/arm64/boot/Image ../artifact/
+          else
+            echo "LIPSA Image"
+          fi
 
-          find out -name '*.ko' -exec cp {} artifact/modules/ \; 2>/dev/null || true
+          cp -v out/arch/arm64/boot/lahaina.dtb ../artifact/ 2>/dev/null || echo "LIPSA lahaina.dtb"
+          cp -v out/arch/arm64/boot/dts/vendor/qcom/*.dtbo ../artifact/ 2>/dev/null || true
 
-          cd ..
-          echo "=== continut artefact ==="
-          ls -la artifact/
-          echo "module: $(ls artifact/modules | wc -l)"
-          echo "dtb/dtbо vili: $(ls artifact | grep -ci vili || true)"
-          du -sh artifact/
+          find out -name '*.ko' -exec cp -v {} ../artifact/modules/ \;
+          echo "total .ko: $(ls ../artifact/modules | wc -l)"
+          echo "dtbo: $(ls ../artifact/*.dtbo 2>/dev/null | wc -l)"
+
+          curl -fsSL -o ../artifact/firmware/htc_9271-1.4.0.fw \
+            https://raw.githubusercontent.com/armbian/firmware/master/htc_9271-1.4.0.fw \
+            || echo "fw htc_9271 nu s-a descarcat"
+
+          du -sh ../artifact
+
+      - name: Verificare artefacte
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          ok=1
+          [ -s artifact/Image ]                        || { echo "LIPSA Image"; ok=0; }
+          [ -s artifact/lahaina.dtb ]                  || { echo "LIPSA lahaina.dtb"; ok=0; }
+          ls artifact/*vili*overlay*.dtbo >/dev/null 2>&1 || { echo "LIPSA vili-sm8350-overlay.dtbo"; ok=0; }
+          [ -s artifact/modules/ath9k_htc.ko ]         || { echo "LIPSA ath9k_htc.ko"; ok=0; }
+          [ -s artifact/modules/rtl8187.ko ]           || { echo "LIPSA rtl8187.ko"; ok=0; }
+          echo "--- continut artifact ---"
+          ls -lR artifact | head -60
+          [ "$ok" = "1" ] || { echo "BUILD INCOMPLET"; exit 1; }
+          echo "OK: artefact complet"
 
       - name: Upload artefact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-build
+          name: vili-kernel
           path: artifact/
           if-no-files-found: warn
-          retention-days: 14
