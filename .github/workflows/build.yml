@@ -1,26 +1,18 @@
 name: Build kernel vili (NetHunter)
 
 # ---------------------------------------------------------------------------
-# Compileaza un kernel custom pentru Xiaomi 11T Pro (codename: vili, SoC
-# Snapdragon 888 / sm8350 "lahaina", Android 11, kernel 5.4.86-qgki).
+# Kernel custom pentru Xiaomi 11T Pro (vili, sm8350, 5.4.86-qgki-g4d120346d9d9),
+# ABI-compatibil cu modulele vendor stock (MIUI V12.5.10.0.RKDMIXM).
 #
-# Scop: adauga driverele Wi-Fi externe ath9k_htc (adaptor AR9271, cel pe care il
-# primesti) si rtl8187 (optional), plus mac80211/cfg80211, pastrand kernelul
-# identic cu stock-ul in rest, ca modulele vendor (qca_cld3_wlan, camera, audio,
-# touch, NFC) sa se incarce mai departe. HID (USB Arsenal) merge deja pe stock.
-#
-# CORECTII fata de incercarile anterioare (Venice):
-#  1. NU mai compilam dtbs. Blocajul repetat a fost compilarea DTB-urilor
-#     (lipsa display/lahaina-sde.dtsi, macro-uri dt-bindings) din sursa publica
-#     MiCode incompleta la DTS. Pentru un flash de kernel prin AnyKernel3
-#     pastram DTB/DTBO stock -> compilam doar "Image" + modulele.
-#  2. NU fortam CONFIG_MODVERSIONS=n. Daca il stingi, vermagic-ul kernelului nu
-#     mai contine "modversions" iar modulele vendor (construite CU modversions)
-#     sunt refuzate -> ramai fara Wi-Fi intern/camera/audio. Lasam MODVERSIONS
-#     ca in stock; folosind exact sursa vili-r-oss, CRC-urile simbolurilor
-#     existente raman identice.
-#  3. Shim pentru symlink-urile techpack (kernel/msm-5.4 -> kernel).
-#  4. KCFLAGS corect (fara backslash in ghilimele duble).
+#  * Config: EXACT config/stock.config (/proc/config.gz stock) + doar driverele
+#    NetHunter ca module (ath9k_htc + dependinte, rtl8187).
+#  * Toolchain: AOSP clang r383902b1 (clang 11.0.2), acelasi ca la Xiaomi.
+#  * Sursa: MiCode vili-r-oss + headerele stock din IKHEADERS (xiaomi/stock-headers):
+#    sursa OSS nu are campurile Xiaomi MIGT/PACKAGE_RUNTIME_INFO din task_struct ->
+#    fara ele toate CRC-urile care ating task_struct difera (bootloop).
+#  * Gate CRC: Module.symvers trebuie sa se potriveasca cu config/stock_crcs.txt
+#    (module_layout 0x72769acb). Altfel job-ul pica.
+#  * Doar Image (fara dtbs) -> AnyKernel3 kernel-only (split_boot/flash_boot).
 # ---------------------------------------------------------------------------
 
 on:
@@ -30,17 +22,11 @@ permissions:
   contents: read
 
 env:
-  LOCALVERSION_STR: "-qgki-g4d120346d9d9"
-  ARGS: >-
-    O=out ARCH=arm64
-    LLVM=1 LLVM_IAS=1
-    CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 LLVM_NM=llvm-nm-14
-    OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14
-    READELF=llvm-readelf-14 STRIP=llvm-strip-14
-    HOSTCC=clang-14 HOSTCXX=clang++-14 HOSTAR=llvm-ar-14 HOSTLD=ld.lld-14
-    CLANG_TRIPLE=aarch64-linux-gnu-
-    CROSS_COMPILE=aarch64-linux-gnu-
-    CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+  CLANG_DIR: /opt/clang-r383902b1
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r48/clang-r383902b1.tar.gz
+  # sufixul git al kernelului stock; CONFIG_LOCALVERSION="-qgki" + AUTO=y raman ca in stock
+  SCMVERSION: "-g4d120346d9d9"
+  EXPECTED_RELEASE: "5.4.86-qgki-g4d120346d9d9"
 
 jobs:
   build:
@@ -49,7 +35,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout repo (pentru vili_defconfig)
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Checkout sursa kernel MiCode (vili-r-oss)
@@ -73,23 +59,40 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             bc bison flex build-essential libssl-dev libelf-dev libncurses-dev \
-            python3 python3-pip zip unzip cpio kmod rsync git curl ca-certificates \
-            gettext \
-            clang-14 lld-14 llvm-14 \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-          # FIX: Makefile-ul (LTO) apeleaza "llvm-nm"/"llvm-ar" fara sufix ->
-          # "llvm-nm: not found" -> nu se genereaza .symversions -> __crc_*
-          # nedefinite -> ld.lld R_AARCH64_ABS32. Punem binarele LLVM 14 in PATH.
-          echo /usr/lib/llvm-14/bin >> "$GITHUB_PATH"
-          ls -l /usr/lib/llvm-14/bin/llvm-nm /usr/lib/llvm-14/bin/clang
+            python3 zip unzip cpio kmod rsync git curl ca-certificates \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      # FIX: symlink-uri techpack rupte (layout AOSP kernel/msm-5.4)
+      - name: Cache AOSP clang r383902b1
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/clang-r383902b1
+          key: aosp-clang-r383902b1-v1
+
+      - name: Descarca AOSP clang r383902b1 (clang 11.0.2, ca stock)
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$CLANG_DIR" && sudo chown "$USER" "$CLANG_DIR"
+          for i in 1 2 3; do
+            curl -fL --retry 3 -o /tmp/clang.tgz "$CLANG_URL" && break
+            sleep 20
+          done
+          tar -xzf /tmp/clang.tgz -C "$CLANG_DIR"
+          rm -f /tmp/clang.tgz
+
+      - name: Verifica toolchain
+        run: |
+          set -euo pipefail
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          "$CLANG_DIR/bin/clang" --version | head -1
+          "$CLANG_DIR/bin/clang" --version | head -1 | grep -q 'r383902b1' || { echo 'EROARE: clang gresit'; exit 1; }
+
       - name: Repara symlink-urile techpack (shim kernel/msm-5.4)
         run: |
           set -e
           cd kernel
           ln -sfn . msm-5.4
-          echo "shim creat: $(ls -ld msm-5.4)"
           reparate=0
           while IFS= read -r link; do
             tinta="$(readlink "$link")" || continue
@@ -101,27 +104,47 @@ jobs:
               echo "NU AM GASIT: $cale (pentru $link)"
             fi
           done < <(find . -path ./msm-5.4 -prune -o -xtype l -print 2>/dev/null)
-          echo "=== symlink-uri copiate suplimentar: $reparate ==="
+          echo "=== symlink-uri copiate: $reparate ==="
+
+      - name: Aplica ABI-ul stock Xiaomi (headere IKHEADERS + Kconfig stubs + simboluri)
+        run: |
+          set -euo pipefail
+          cd kernel
+          # 1) headerele din kernelul stock (task_struct/user_struct cu MIGT/PACKAGE_RUNTIME_INFO)
+          ( cd ../xiaomi/stock-headers && find . -type f ) | while read -r f; do
+            install -D -m644 "../xiaomi/stock-headers/$f" "$f"; echo "stock header: $f"
+          done
+          # 2) Kconfig stubs pentru optiunile Xiaomi lipsa din sursa OSS
+          cp ../xiaomi/Kconfig.xiaomi init/Kconfig.xiaomi
+          grep -q 'init/Kconfig.xiaomi' init/Kconfig || echo 'source "init/Kconfig.xiaomi"' >> init/Kconfig
+          # 3) CONFIG_DEBUG_POWER_MI foloseste qrtr_first_msg definit in cod Xiaomi nepublicat
+          if grep -q 'extern int qrtr_first_msg' net/qrtr/qrtr.h && \
+             ! grep -rqE '^int qrtr_first_msg' net/ kernel/ drivers/ 2>/dev/null; then
+            printf '\n#ifdef CONFIG_DEBUG_POWER_MI\nint qrtr_first_msg = 1;\n#endif\n' >> net/qrtr/qrtr.c
+            echo "definit qrtr_first_msg"
+          fi
+          # 4) release identic cu stock: setlocalversion citeste .scmversion (fara "+")
+          printf '%s' "$SCMVERSION" > .scmversion
 
       - name: Adauga ath9k_htc + rtl8187 (din mainline 5.4.86)
         run: |
           set -e
           ML="$GITHUB_WORKSPACE/mainline/drivers/net/wireless"
           WL="$GITHUB_WORKSPACE/kernel/drivers/net/wireless"
-
           if [ ! -d "$WL/ath/ath9k" ]; then
             mkdir -p "$WL/ath"
             cp -rn "$ML/ath/." "$WL/ath/"
           fi
           mkdir -p "$WL/realtek"
           [ -d "$WL/realtek/rtl818x" ] || cp -r "$ML/realtek/rtl818x" "$WL/realtek/"
-
+          # ath9k_htc face "select MAC80211_LEDS" -> ar schimba mac80211 built-in fata de stock.
+          # Codul LED din ath9k e sub #ifdef CONFIG_MAC80211_LEDS, deci il putem scoate.
+          sed -i '/^config ATH9K_HTC$/,/^config /{/select MAC80211_LEDS/d}' "$WL/ath/ath9k/Kconfig"
           cd "$WL"
           grep -q 'wireless/ath/Kconfig'  Kconfig  || echo 'source "drivers/net/wireless/ath/Kconfig"'       >> Kconfig
           grep -q 'WLAN_VENDOR_ATH'       Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_ATH) += ath/'           >> Makefile
           grep -q 'realtek/Kconfig'       Kconfig  || echo 'source "drivers/net/wireless/realtek/Kconfig"'   >> Kconfig
           grep -q 'WLAN_VENDOR_REALTEK'   Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/'   >> Makefile
-
           if [ ! -f realtek/Kconfig ]; then
             printf 'config WLAN_VENDOR_REALTEK\n\tbool "Realtek devices"\n\tdefault y\nif WLAN_VENDOR_REALTEK\nsource "drivers/net/wireless/realtek/rtl818x/Kconfig"\nendif\n' > realtek/Kconfig
           else
@@ -129,198 +152,161 @@ jobs:
           fi
           touch realtek/Makefile
           grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
-
           echo "ath9k prezent:   $(ls -d "$WL/ath/ath9k" 2>/dev/null || echo NU)"
           echo "rtl8187 prezent: $(ls -d "$WL/realtek/rtl818x/rtl8187" 2>/dev/null || echo NU)"
+          grep -n -A8 '^config ATH9K_HTC$' "$WL/ath/ath9k/Kconfig"
 
-      # FIX: CONFIG_DEBUG_POWER_MI=y (stock) foloseste "extern int qrtr_first_msg"
-      # definit in cod Xiaomi nepublicat -> "undefined symbol: qrtr_first_msg"
-      # la link vmlinux. Il definim in qrtr.c (config ramane identic cu stock).
-      - name: Repara simboluri lipsa din sursa MiCode (qrtr_first_msg)
+      - name: Config = stock.config + module NetHunter
         run: |
-          set -e
+          set -euo pipefail
           cd kernel
-          if grep -q 'extern int qrtr_first_msg' net/qrtr/qrtr.h && \
-             ! grep -rqE '^int qrtr_first_msg' net/ kernel/ drivers/ 2>/dev/null; then
-            printf '\n#ifdef CONFIG_DEBUG_POWER_MI\nint qrtr_first_msg = 1;\n#endif\n' >> net/qrtr/qrtr.c
-            echo "definit qrtr_first_msg in net/qrtr/qrtr.c"
-          fi
-          tail -5 net/qrtr/qrtr.c
-
-      - name: Pregateste config-ul (normalizare + optiuni)
-        run: |
-          set -e
-          cd kernel
-          SRC_DEF=""
-          for p in ../vili_defconfig ../config/vili_defconfig arch/arm64/configs/vili_defconfig; do
-            [ -f "$p" ] && { SRC_DEF="$p"; break; }
-          done
-          [ -n "$SRC_DEF" ] || { echo "EROARE: nu gasesc vili_defconfig in repo"; exit 1; }
-          echo "defconfig sursa: $SRC_DEF"
-
-          if head -c2 "$SRC_DEF" | od -An -tx1 | grep -qi 'ff fe'; then
-            iconv -f UTF-16LE -t UTF-8 "$SRC_DEF" > /tmp/dc.raw
-          elif head -c2 "$SRC_DEF" | od -An -tx1 | grep -qi 'fe ff'; then
-            iconv -f UTF-16BE -t UTF-8 "$SRC_DEF" > /tmp/dc.raw
-          else
-            cp "$SRC_DEF" /tmp/dc.raw
-          fi
-          sed -e '1s/^\xEF\xBB\xBF//' -e 's/\r$//' /tmp/dc.raw | tr -d '\000' > /tmp/dc.clean
-          grep -q '^CONFIG_' /tmp/dc.clean || { echo "EROARE: defconfig fara linii CONFIG_"; exit 1; }
-          install -m644 /tmp/dc.clean arch/arm64/configs/vili_defconfig
-          echo "linii in defconfig: $(wc -l < arch/arm64/configs/vili_defconfig)"
-
-          # FIX: fara asta setlocalversion adauga "+" (checkout git modificat)
-          # -> release 5.4.86-qgki-...+ != stock -> modulele vendor refuzate.
-          : > .scmversion
-          make $ARGS vili_defconfig
-
-          add_cfg() {
-            local sym="${1%%=*}"
+          mkdir -p out
+          cp ../config/stock.config out/.config
+          set_cfg() {
+            local sym="${1%%=*}"; sym="${sym#\# }"; sym="${sym%% *}"
             sed -i -e "/^${sym}=/d" -e "/^# ${sym} is not set/d" out/.config
             printf '%s\n' "$1" >> out/.config
           }
-
-          add_cfg 'CONFIG_WLAN=y'
-          add_cfg 'CONFIG_CFG80211=y'
-          add_cfg 'CONFIG_MAC80211=y'
-          add_cfg 'CONFIG_WLAN_VENDOR_ATH=y'
-          add_cfg 'CONFIG_WLAN_VENDOR_REALTEK=y'
-          add_cfg 'CONFIG_USB_SUPPORT=y'
-
-          add_cfg 'CONFIG_ATH_COMMON=m'
-          add_cfg 'CONFIG_ATH9K_HW=m'
-          add_cfg 'CONFIG_ATH9K_COMMON=m'
-          add_cfg 'CONFIG_ATH9K_HTC=m'
-          add_cfg 'CONFIG_ATH9K_HTC_DEBUGFS=y'
-          add_cfg 'CONFIG_RTL8187=m'
-          add_cfg 'CONFIG_EEPROM_93CX6=m'
-          add_cfg 'CONFIG_MAC80211_LEDS=y'
-
-          add_cfg 'CONFIG_RTC_LIB=y'
-          add_cfg 'CONFIG_MODULES=y'
-          add_cfg 'CONFIG_MODULE_SIG=n'
-          add_cfg 'CONFIG_MODULE_SIG_FORCE=n'
-          # Pastram MODVERSIONS (modulele vendor).
-          add_cfg 'CONFIG_MODVERSIONS=y'
-
-          add_cfg "CONFIG_LOCALVERSION=\"${LOCALVERSION_STR}\""
-          sed -i '/^CONFIG_LOCALVERSION_AUTO=y/d' out/.config
-          printf '# CONFIG_LOCALVERSION_AUTO is not set\n' >> out/.config
-
+          # doar bool-uri de vizibilitate + drivere ca module (nu schimba structuri core)
+          set_cfg 'CONFIG_WLAN_VENDOR_ATH=y'
+          set_cfg 'CONFIG_ATH_COMMON=m'
+          set_cfg 'CONFIG_ATH9K_HW=m'
+          set_cfg 'CONFIG_ATH9K_COMMON=m'
+          set_cfg 'CONFIG_ATH9K_HTC=m'
+          set_cfg 'CONFIG_WLAN_VENDOR_REALTEK=y'
+          set_cfg 'CONFIG_RTL8187=m'
+          set_cfg 'CONFIG_EEPROM_93CX6=m'
+          # stock nu are RELR (toolchain-ul Xiaomi nu l-a detectat) -> il tinem oprit
+          set_cfg '# CONFIG_RELR is not set'
           make $ARGS olddefconfig
-
-      - name: Verificare config
-        run: |
-          cd kernel
-          echo "=== stare simboli ==="
-          for o in CONFIG_WLAN CONFIG_CFG80211 CONFIG_MAC80211 \
-                   CONFIG_WLAN_VENDOR_ATH CONFIG_WLAN_VENDOR_REALTEK \
-                   CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_EEPROM_93CX6 \
-                   CONFIG_RTC_LIB CONFIG_MODULES CONFIG_MODULE_SIG \
-                   CONFIG_MODVERSIONS CONFIG_MODULE_REL_CRCS CONFIG_LOCALVERSION; do
-            printf '%-32s %s\n' "$o" "$(grep -E "^${o}[= ]" out/.config || echo 'LIPSA/default')"
+          set_cfg '# CONFIG_RELR is not set'
+          make $ARGS olddefconfig
+          echo "=== diferente fata de stock.config ==="
+          diff <(grep -E '^(CONFIG_|# CONFIG_)' ../config/stock.config | sort) \
+               <(grep -E '^(CONFIG_|# CONFIG_)' out/.config | sort) | tee ../config.diff || true
+          for o in CONFIG_MIGT CONFIG_PACKAGE_RUNTIME_INFO CONFIG_MODVERSIONS CONFIG_LTO_CLANG CONFIG_CFI_CLANG \
+                   CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_MAC80211_LEDS CONFIG_LOCALVERSION CONFIG_LOCALVERSION_AUTO CONFIG_RELR; do
+            printf '%-30s %s\n' "$o" "$(grep -E "^${o}=|^# ${o} is not set" out/.config || echo LIPSA)"
           done
           grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo 'EROARE: ath9k_htc nu e modul'; exit 1; }
+          grep -q '^CONFIG_MIGT=y' out/.config || { echo 'EROARE: CONFIG_MIGT pierdut'; exit 1; }
+          # nimic built-in (=y) nou fata de stock, in afara de bool-uri de meniu WLAN / ath9k-only / detectie toolchain
+          extra=$(diff <(grep -E '^CONFIG_[A-Z0-9_]+=y' ../config/stock.config | sort) \
+                       <(grep -E '^CONFIG_[A-Z0-9_]+=y' out/.config | sort) | grep '^>' \
+                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|WLAN_VENDOR_REALTEK|RTL_CARDS|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
+          [ -z "$extra" ] || { echo "EROARE: optiuni built-in noi fata de stock:"; echo "$extra"; exit 1; }
+        env:
+          ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       # Compilam DOAR Image + modules (NU dtbs) -> pastram DTB/DTBO stock.
       - name: Build kernel (Image + module)
         run: |
           set -euo pipefail
           cd kernel
-          command -v llvm-nm || { echo 'EROARE: llvm-nm lipsa din PATH'; exit 1; }
           export KCFLAGS="-Wno-error -I$PWD/techpack/audio/include -I$PWD/drivers/pinctrl -I$PWD/techpack/audio -I$PWD/drivers/soundwire"
-          echo "KCFLAGS=$KCFLAGS"
-          # pipefail: daca make crapa, pasul e rosu (nu doar tee=ok)
+          command -v llvm-nm
           make $ARGS -j"$(nproc)" Image modules 2>&1 | tee build.log
-          echo "--- erori gasite: $(grep -c 'error:' build.log || true) ---"
-          grep -n 'error:' build.log | head -40 || true
-          echo "--- 'not found' in build.log: $(grep -c 'not found' build.log || true) ---"
-          echo "--- version generation failed: $(grep -c 'version generation failed' build.log || true) ---"
+          echo "--- erori: $(grep -c 'error:' build.log || true) | 'not found': $(grep -c 'not found' build.log || true) | version generation failed: $(grep -c 'version generation failed' build.log || true) ---"
           test -s out/arch/arm64/boot/Image || { echo 'EROARE: Image lipsa dupa make'; exit 1; }
           REL="$(cat out/include/config/kernel.release)"
           echo "kernel.release = $REL"
-          [ "$REL" = "5.4.86${LOCALVERSION_STR}" ] || { echo "EROARE: release '$REL' difera de stock 5.4.86${LOCALVERSION_STR}"; exit 1; }
+          [ "$REL" = "$EXPECTED_RELEASE" ] || { echo "EROARE: release '$REL' != $EXPECTED_RELEASE"; exit 1; }
+        env:
+          ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Pregateste AnyKernel3
+      - name: Gate CRC vs modulele vendor stock
         if: always()
         run: |
+          set -euo pipefail
+          mkdir -p artifact
+          cp kernel/out/Module.symvers artifact/Module.symvers
+          cp kernel/out/.config artifact/kernel.config
+          cp config.diff artifact/config.diff 2>/dev/null || true
+          python3 ci/crc_gate.py config/stock_crcs.txt kernel/out/Module.symvers artifact/crc_report.txt kernel/out config/stock_exports.txt
+
+      - name: Pregateste AnyKernel3 (kernel-only, vili)
+        run: |
+          set -euo pipefail
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
-          rm -rf ak3/.git ak3/modules ak3/ramdisk ak3/patch
-          mkdir -p ak3/modules/vendor/lib/modules ak3/modules/vendor/firmware
-          sed -i \
-            -e 's|kernel.string=.*|kernel.string=NetHunter kernel vili|' \
-            -e 's|do.devicecheck=.*|do.devicecheck=1|' \
-            -e 's|do.modules=.*|do.modules=1|' \
-            -e 's|do.systemless=.*|do.systemless=1|' \
-            -e 's|device.name1=.*|device.name1=vili|' \
-            -e 's|^block=.*|block=/dev/block/bootdevice/by-name/boot;|' \
-            -e 's|^is_slot_device=.*|is_slot_device=1;|' \
-            ak3/anykernel.sh
-          echo "=== anykernel.sh (verificare) ==="
-          grep -E 'kernel.string|device.name1|^block=|^is_slot_device' ak3/anykernel.sh
+          rm -rf ak3/.git ak3/.github ak3/modules ak3/ramdisk ak3/patch ak3/README.md
+          cat > ak3/anykernel.sh <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script - vili (Xiaomi 11T Pro)
+          ## kernel-only replacement: pastreaza ramdisk-ul (Magisk), dtb/dtbo stock
+
+          ### AnyKernel setup
+          # global properties
+          properties() { '
+          kernel.string=NetHunter kernel vili (stock ABI 5.4.86-qgki-g4d120346d9d9)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=vili
+          device.name2=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+          # boot shell variables
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh;
+
+          # boot install: doar kernelul (Image), fara unpack/repack de ramdisk
+          split_boot;
+          flash_boot;
+          ## end boot install
+          AK3
+          sed -i 's/^          //' ak3/anykernel.sh
+          echo "=== anykernel.sh ==="; cat ak3/anykernel.sh
+          grep -q 'omap\|tuna' ak3/anykernel.sh && { echo 'EROARE: anykernel.sh generic'; exit 1; } || true
 
       - name: Colectare artefacte + firmware
         if: always()
         run: |
           set -e
-          cd kernel
-          mkdir -p ../artifact
-          if [ -f out/arch/arm64/boot/Image ]; then
-            cp -v out/arch/arm64/boot/Image ../ak3/Image
-            cp -v out/arch/arm64/boot/Image ../artifact/Image
-          else
-            echo "LIPSA Image (build-ul a esuat la vmlinux)"
+          mkdir -p artifact/modules artifact/firmware/ath9k_htc
+          if [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp -v kernel/out/arch/arm64/boot/Image ak3/Image
+            cp -v kernel/out/arch/arm64/boot/Image artifact/Image
           fi
-          find out -name '*.ko' -exec cp -v {} ../ak3/modules/vendor/lib/modules/ \; 2>/dev/null || true
-          find out -name '*.ko' -exec cp -v {} ../artifact/ \; 2>/dev/null || true
-          echo "total .ko: $(ls ../ak3/modules/vendor/lib/modules/ 2>/dev/null | wc -l)"
-          # AR9271: driverul cere "ath9k_htc/htc_9271-1.4.0.fw" (nume nou) si,
-          # ca fallback, "htc_9271.fw" (nume vechi). Punem ambele in /vendor/firmware/.
+          # modulele Wi-Fi externe (pentru un modul Magisk separat); NU intra in zip-ul AK3
+          for m in ath ath9k_hw ath9k_common ath9k_htc rtl8187 eeprom_93cx6; do
+            f=$(find kernel/out -name "$m.ko" | head -1); [ -n "$f" ] && cp -v "$f" artifact/modules/
+          done
           LF="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
-          mkdir -p ../ak3/modules/vendor/firmware/ath9k_htc ../artifact/firmware/ath9k_htc
-          fwok=0
-          if curl -fsSL -o /tmp/fw1 "$LF/ath9k_htc/htc_9271-1.4.0.fw" && [ "$(stat -c%s /tmp/fw1 2>/dev/null || echo 0)" -gt 10000 ]; then
-            cp /tmp/fw1 ../ak3/modules/vendor/firmware/ath9k_htc/htc_9271-1.4.0.fw
-            cp /tmp/fw1 ../ak3/modules/vendor/firmware/htc_9271-1.4.0.fw
-            cp /tmp/fw1 ../artifact/firmware/ath9k_htc/htc_9271-1.4.0.fw
-            fwok=1; echo "firmware 1.4.0 ok"
-          fi
-          if curl -fsSL -o /tmp/fw2 "$LF/htc_9271.fw" && [ "$(stat -c%s /tmp/fw2 2>/dev/null || echo 0)" -gt 10000 ]; then
-            cp /tmp/fw2 ../ak3/modules/vendor/firmware/htc_9271.fw
-            cp /tmp/fw2 ../ak3/modules/vendor/firmware/ath9k_htc/htc_9271.fw
-            cp /tmp/fw2 ../artifact/firmware/htc_9271.fw
-            fwok=1; echo "firmware (nume vechi) ok"
-          fi
-          [ "$fwok" = 1 ] || echo "AVERTISMENT: firmware htc_9271 nu s-a descarcat"
+          curl -fsSL -o artifact/firmware/ath9k_htc/htc_9271-1.4.0.fw "$LF/ath9k_htc/htc_9271-1.4.0.fw" || echo "AVERTISMENT: fw 1.4.0"
+          curl -fsSL -o artifact/firmware/htc_9271.fw "$LF/htc_9271.fw" || echo "AVERTISMENT: fw vechi"
+          for m in artifact/modules/*.ko; do
+            printf '%s ' "$(basename $m)"; modprobe --dump-modversions "$m" | grep -w module_layout || echo '(fara module_layout)'
+          done
 
       - name: Impacheteaza zip-ul AnyKernel3
-        if: always()
         run: |
           cd ak3
-          if [ ! -f Image ]; then echo "Nu exista Image -> fara zip flashabil"; exit 0; fi
+          [ -f Image ] || { echo "Nu exista Image"; exit 1; }
           zip -r9 ../artifact/AnyKernel3-vili-nethunter.zip . -x '.git*'
-          ls -lh ../artifact/AnyKernel3-vili-nethunter.zip
+          unzip -l ../artifact/AnyKernel3-vili-nethunter.zip
 
       - name: Verificare artefacte
         if: always()
         run: |
-          cd "$GITHUB_WORKSPACE"
-          echo "--- continut artifact ---"
-          ls -lR artifact 2>/dev/null | head -80
+          ls -lR artifact | head -60
           ok=1
-          [ -s artifact/Image ]        || { echo 'LIPSA Image';        ok=0; }
-          [ -s artifact/ath9k_htc.ko ] || { echo 'LIPSA ath9k_htc.ko'; ok=0; }
-          if [ "$ok" = 1 ]; then
-            echo 'OK: artefact complet'
-          else
-            echo 'BUILD INCOMPLET (vezi build.log)'
-            exit 1
-          fi
+          [ -s artifact/Image ]                  || { echo 'LIPSA Image'; ok=0; }
+          [ -s artifact/modules/ath9k_htc.ko ]   || { echo 'LIPSA ath9k_htc.ko'; ok=0; }
+          [ -s artifact/AnyKernel3-vili-nethunter.zip ] || { echo 'LIPSA zip AK3'; ok=0; }
+          [ "$ok" = 1 ] && echo 'OK: artefact complet' || exit 1
 
       - name: Salveaza build.log
         if: always()
-        run: cp kernel/build.log artifact/build.log 2>/dev/null || true
+        run: mkdir -p artifact && cp kernel/build.log artifact/build.log 2>/dev/null || true
 
       - name: Upload artefact
         if: always()

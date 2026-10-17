@@ -1,0 +1,20 @@
+# Stub-uri pentru optiuni Xiaomi prezente in config-ul stock dar lipsa din sursa OSS
+config MIHW
+	bool "MI driver"
+config MIGT
+	bool "smart sched"
+	depends on MIHW
+config PACKAGE_RUNTIME_INFO
+	bool "package runtime info"
+config MIUI_ZRAM_MEMORY_TRACKING
+	bool "MIUI zram memory tracking"
+config MI_MEMORY_SYSFS
+	tristate "MI memory sysfs"
+config UFSGKI
+	bool "UFS GKI"
+config UFS_WB
+	bool "UFS write booster"
+config CLD
+	bool "CLD"
+config F2FS_CP_OPT
+	bool "F2FS checkpoint opt"
