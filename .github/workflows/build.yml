@@ -46,7 +46,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout driver mainline 5.4.86 (ath9k_htc + rtl8187)
+      - name: Checkout driver mainline 5.4.86 (ath9k_htc)
         uses: actions/checkout@v4
         with:
           repository: gregkh/linux
@@ -129,7 +129,7 @@ jobs:
           # 5) release identic cu stock: setlocalversion citeste .scmversion (fara "+")
           printf '%s' "$SCMVERSION" > .scmversion
 
-      - name: Adauga ath9k_htc + rtl8187 (din mainline 5.4.86)
+      - name: Adauga ath9k_htc (din mainline 5.4.86)
         run: |
           set -e
           ML="$GITHUB_WORKSPACE/mainline/drivers/net/wireless"
@@ -138,25 +138,13 @@ jobs:
             mkdir -p "$WL/ath"
             cp -rn "$ML/ath/." "$WL/ath/"
           fi
-          mkdir -p "$WL/realtek"
-          [ -d "$WL/realtek/rtl818x" ] || cp -r "$ML/realtek/rtl818x" "$WL/realtek/"
-          # ath9k_htc face "select MAC80211_LEDS" -> ar schimba mac80211 built-in fata de stock.
-          # Codul LED din ath9k e sub #ifdef CONFIG_MAC80211_LEDS, deci il putem scoate.
+          # ath9k_htc face "select MAC80211_LEDS"; stock are MAC80211_LEDS=n (mac80211 built-in).
+          # Codul LED din ath9k e sub #ifdef CONFIG_MAC80211_LEDS, deci scoatem select-ul.
           sed -i '/^config ATH9K_HTC$/,/^config /{/select MAC80211_LEDS/d}' "$WL/ath/ath9k/Kconfig"
           cd "$WL"
           grep -q 'wireless/ath/Kconfig'  Kconfig  || echo 'source "drivers/net/wireless/ath/Kconfig"'       >> Kconfig
           grep -q 'WLAN_VENDOR_ATH'       Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_ATH) += ath/'           >> Makefile
-          grep -q 'realtek/Kconfig'       Kconfig  || echo 'source "drivers/net/wireless/realtek/Kconfig"'   >> Kconfig
-          grep -q 'WLAN_VENDOR_REALTEK'   Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/'   >> Makefile
-          if [ ! -f realtek/Kconfig ]; then
-            printf 'config WLAN_VENDOR_REALTEK\n\tbool "Realtek devices"\n\tdefault y\nif WLAN_VENDOR_REALTEK\nsource "drivers/net/wireless/realtek/rtl818x/Kconfig"\nendif\n' > realtek/Kconfig
-          else
-            grep -q 'rtl818x/Kconfig' realtek/Kconfig || printf 'if WLAN_VENDOR_REALTEK\nsource "drivers/net/wireless/realtek/rtl818x/Kconfig"\nendif\n' >> realtek/Kconfig
-          fi
-          touch realtek/Makefile
-          grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
-          echo "ath9k prezent:   $(ls -d "$WL/ath/ath9k" 2>/dev/null || echo NU)"
-          echo "rtl8187 prezent: $(ls -d "$WL/realtek/rtl818x/rtl8187" 2>/dev/null || echo NU)"
+          echo "ath9k prezent: $(ls -d "$WL/ath/ath9k" 2>/dev/null || echo NU)"
           grep -n -A8 '^config ATH9K_HTC$' "$WL/ath/ath9k/Kconfig"
 
       - name: Config = stock.config + module NetHunter
@@ -176,9 +164,6 @@ jobs:
           set_cfg 'CONFIG_ATH9K_HW=m'
           set_cfg 'CONFIG_ATH9K_COMMON=m'
           set_cfg 'CONFIG_ATH9K_HTC=m'
-          set_cfg 'CONFIG_WLAN_VENDOR_REALTEK=y'
-          set_cfg 'CONFIG_RTL8187=m'
-          set_cfg 'CONFIG_EEPROM_93CX6=m'
           # stock nu are RELR (toolchain-ul Xiaomi nu l-a detectat) -> il tinem oprit
           set_cfg '# CONFIG_RELR is not set'
           make $ARGS olddefconfig
@@ -188,7 +173,7 @@ jobs:
           diff <(grep -E '^(CONFIG_|# CONFIG_)' ../config/stock.config | sort) \
                <(grep -E '^(CONFIG_|# CONFIG_)' out/.config | sort) | tee ../config.diff || true
           for o in CONFIG_MIGT CONFIG_PACKAGE_RUNTIME_INFO CONFIG_MODVERSIONS CONFIG_LTO_CLANG CONFIG_CFI_CLANG \
-                   CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_MAC80211_LEDS CONFIG_LOCALVERSION CONFIG_LOCALVERSION_AUTO CONFIG_RELR; do
+                   CONFIG_ATH9K_HTC CONFIG_MAC80211_LEDS CONFIG_LOCALVERSION CONFIG_LOCALVERSION_AUTO CONFIG_RELR; do
             printf '%-30s %s\n' "$o" "$(grep -E "^${o}=|^# ${o} is not set" out/.config || echo LIPSA)"
           done
           grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo 'EROARE: ath9k_htc nu e modul'; exit 1; }
@@ -196,7 +181,7 @@ jobs:
           # nimic built-in (=y) nou fata de stock, in afara de bool-uri de meniu WLAN / ath9k-only / detectie toolchain
           extra=$(diff <(grep -E '^CONFIG_[A-Z0-9_]+=y' ../config/stock.config | sort) \
                        <(grep -E '^CONFIG_[A-Z0-9_]+=y' out/.config | sort) | grep '^>' \
-                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|WLAN_VENDOR_REALTEK|RTL_CARDS|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
+                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
           [ -z "$extra" ] || { echo "EROARE: optiuni built-in noi fata de stock:"; echo "$extra"; exit 1; }
         env:
           ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -217,22 +202,58 @@ jobs:
         env:
           ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: Gate CRC vs modulele vendor stock
-        if: always()
+      # Gate pentru varianta FALLBACK (inlocuire kernel). Nu blocheaza modulul Magisk.
+      - name: Gate CRC kernel vs modulele vendor stock (fallback)
+        id: kgate
+        continue-on-error: true
         run: |
           set -euo pipefail
-          mkdir -p artifact
-          cp kernel/out/Module.symvers artifact/Module.symvers
-          cp kernel/out/.config artifact/kernel.config
-          cp config.diff artifact/config.diff 2>/dev/null || true
+          mkdir -p artifact/kernel-fallback
+          cp kernel/out/Module.symvers artifact/kernel-fallback/Module.symvers
+          cp kernel/out/.config artifact/kernel-fallback/kernel.config
+          cp config.diff artifact/kernel-fallback/config.diff 2>/dev/null || true
           echo "===== GATE 1: 1020 CRC-uri (msm_drm, cnss2, camera) ====="
-          python3 ci/crc_gate.py config/stock_crcs.txt kernel/out/Module.symvers artifact/crc_report.txt kernel/out config/stock_exports.txt
+          python3 ci/crc_gate.py config/stock_crcs.txt kernel/out/Module.symvers artifact/kernel-fallback/crc_report.txt kernel/out config/stock_exports.txt
           echo "===== GATE 2: toate cele 110 module din /vendor/lib/modules (simboluri din kernel) ====="
           # mi_memory.ko (info memorie Xiaomi, necritic) cere exporturi UFS/memblock private Xiaomi
           CRC_ALLOW_MISSING=get_ufs_data,get_ufs_hba_data,get_ufs_sdev_data,memblock_mem_size_in_gb,ufs_get_string_desc,ufs_read_desc_param,ufshcd_read_desc \
-            python3 ci/crc_gate.py config/stock_vendor_crcs.txt kernel/out/Module.symvers artifact/crc_report_all_vendor.txt
+            python3 ci/crc_gate.py config/stock_vendor_crcs.txt kernel/out/Module.symvers artifact/kernel-fallback/crc_report_all_vendor.txt
 
-      - name: Pregateste AnyKernel3 (kernel-only, vili)
+      # CALEA PRINCIPALA: doar modulele ath9k_htc pe kernelul STOCK (fara inlocuire kernel).
+      - name: Gate module ath9k_htc vs kernelul STOCK (CRC + module_layout + vermagic)
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/magisk-src/lib
+          for m in ath ath9k_hw ath9k_common ath9k_htc; do
+            f=$(find kernel/out/drivers/net/wireless/ath -name "$m.ko" | head -1)
+            [ -n "$f" ] || { echo "LIPSA $m.ko"; exit 1; }
+            cp -v "$f" artifact/magisk-src/lib/
+          done
+          # strip debug info (pastreaza __versions/.modinfo/simboluri)
+          for k in artifact/magisk-src/lib/*.ko; do llvm-strip --strip-debug "$k"; done
+          python3 ci/ko_gate.py config/stock_kernel_crcs.txt \
+            "5.4.86-qgki-g4d120346d9d9 SMP preempt mod_unload modversions aarch64" \
+            artifact/ko_gate_report.txt artifact/magisk-src/lib/*.ko
+
+      - name: Modul Magisk AR9271 (ath9k_htc + firmware)
+        run: |
+          set -euo pipefail
+          D=artifact/magisk-src
+          cp -r magisk/. "$D/"
+          LF="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
+          mkdir -p "$D/firmware/ath9k_htc" "$D/system/vendor/firmware/ath9k_htc"
+          curl -fsSL -o "$D/firmware/ath9k_htc/htc_9271-1.4.0.fw" "$LF/ath9k_htc/htc_9271-1.4.0.fw"
+          curl -fsSL -o "$D/firmware/htc_9271.fw" "$LF/htc_9271.fw"
+          for f in ath9k_htc/htc_9271-1.4.0.fw htc_9271.fw; do
+            [ "$(stat -c%s "$D/firmware/$f")" -gt 10000 ] || { echo "firmware $f invalid"; exit 1; }
+            cp "$D/firmware/$f" "$D/system/vendor/firmware/$f"
+          done
+          (cd "$D" && zip -r9 ../AR9271-ath9k_htc-vili-stock-magisk.zip . -x '.git*')
+          unzip -l artifact/AR9271-ath9k_htc-vili-stock-magisk.zip
+          ls -l artifact/AR9271-ath9k_htc-vili-stock-magisk.zip
+
+      - name: Pregateste AnyKernel3 (kernel-only, vili) - doar daca gate-ul kernel a trecut
+        if: steps.kgate.outcome == 'success'
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
@@ -275,42 +296,29 @@ jobs:
           echo "=== anykernel.sh ==="; cat ak3/anykernel.sh
           grep -q 'omap\|tuna' ak3/anykernel.sh && { echo 'EROARE: anykernel.sh generic'; exit 1; } || true
 
-      - name: Colectare artefacte + firmware
+      - name: Colectare Image (fallback)
         if: always()
         run: |
-          set -e
-          mkdir -p artifact/modules artifact/firmware/ath9k_htc
+          mkdir -p artifact/kernel-fallback
           if [ -f kernel/out/arch/arm64/boot/Image ]; then
-            cp -v kernel/out/arch/arm64/boot/Image ak3/Image
-            cp -v kernel/out/arch/arm64/boot/Image artifact/Image
+            cp -v kernel/out/arch/arm64/boot/Image artifact/kernel-fallback/Image
+            [ -d ak3 ] && cp -v kernel/out/arch/arm64/boot/Image ak3/Image || true
           fi
-          # modulele Wi-Fi externe (pentru un modul Magisk separat); NU intra in zip-ul AK3
-          for m in ath ath9k_hw ath9k_common ath9k_htc rtl8187 eeprom_93cx6; do
-            f=$(find kernel/out -name "$m.ko" | head -1); [ -n "$f" ] && cp -v "$f" artifact/modules/
-          done
-          LF="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
-          curl -fsSL -o artifact/firmware/ath9k_htc/htc_9271-1.4.0.fw "$LF/ath9k_htc/htc_9271-1.4.0.fw" || echo "AVERTISMENT: fw 1.4.0"
-          curl -fsSL -o artifact/firmware/htc_9271.fw "$LF/htc_9271.fw" || echo "AVERTISMENT: fw vechi"
-          for m in artifact/modules/*.ko; do
-            printf '%s ' "$(basename $m)"; modprobe --dump-modversions "$m" | grep -w module_layout || echo '(fara module_layout)'
-          done
 
-      - name: Impacheteaza zip-ul AnyKernel3
+      - name: Impacheteaza zip-ul AnyKernel3 (fallback)
+        if: steps.kgate.outcome == 'success'
         run: |
           cd ak3
           [ -f Image ] || { echo "Nu exista Image"; exit 1; }
-          zip -r9 ../artifact/AnyKernel3-vili-nethunter.zip . -x '.git*'
-          unzip -l ../artifact/AnyKernel3-vili-nethunter.zip
+          zip -r9 ../artifact/kernel-fallback/AnyKernel3-vili-nethunter.zip . -x '.git*'
+          unzip -l ../artifact/kernel-fallback/AnyKernel3-vili-nethunter.zip
 
       - name: Verificare artefacte
         if: always()
         run: |
-          ls -lR artifact | head -60
-          ok=1
-          [ -s artifact/Image ]                  || { echo 'LIPSA Image'; ok=0; }
-          [ -s artifact/modules/ath9k_htc.ko ]   || { echo 'LIPSA ath9k_htc.ko'; ok=0; }
-          [ -s artifact/AnyKernel3-vili-nethunter.zip ] || { echo 'LIPSA zip AK3'; ok=0; }
-          [ "$ok" = 1 ] && echo 'OK: artefact complet' || exit 1
+          ls -lR artifact | grep -v '^$' | head -80
+          [ -s artifact/AR9271-ath9k_htc-vili-stock-magisk.zip ] || { echo 'LIPSA zip Magisk'; exit 1; }
+          echo "gate kernel (fallback): ${{ steps.kgate.outcome }}"
 
       - name: Salveaza build.log
         if: always()

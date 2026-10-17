@@ -1,0 +1,19 @@
+#!/system/bin/sh
+# ar9271 load|unload|status  - gestioneaza ath9k_htc pe kernelul stock vili
+MODDIR=/data/adb/modules/ar9271_ath9k_htc
+LIB=$MODDIR/lib
+FW=$MODDIR/firmware
+case "$1" in
+  load)
+    # cale firmware suplimentara (pe langa /vendor/firmware suprapus de Magisk)
+    [ -w /sys/module/firmware_class/parameters/path ] && echo -n "$FW" > /sys/module/firmware_class/parameters/path
+    for m in ath ath9k_hw ath9k_common ath9k_htc; do
+      if grep -q "^$m " /proc/modules; then echo "$m deja incarcat"; continue; fi
+      insmod "$LIB/$m.ko" && echo "insmod $m OK" || { echo "insmod $m ESUAT"; dmesg | tail -20; exit 1; }
+    done ;;
+  unload)
+    for m in ath9k_htc ath9k_common ath9k_hw ath; do rmmod "$m" 2>/dev/null && echo "rmmod $m"; done ;;
+  status|*)
+    grep -E '^ath' /proc/modules || echo "ath9k_htc neincarcat"
+    cat /sys/module/firmware_class/parameters/path 2>/dev/null; echo ;;
+esac

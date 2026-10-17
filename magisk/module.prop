@@ -1,0 +1,6 @@
+id=ar9271_ath9k_htc
+name=AR9271 ath9k_htc (stock kernel vili)
+version=v1.0
+versionCode=1
+author=dinelo
+description=ath9k_htc + firmware pentru adaptorul USB AR9271, compilat pe ABI-ul kernelului stock 5.4.86-qgki-g4d120346d9d9 (MIUI V12.5.10.0.RKDMIXM). Nu inlocuieste kernelul.

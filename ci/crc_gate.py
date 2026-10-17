@@ -39,7 +39,10 @@ def ko_versions(path):
     return {}
 ko_bad = []
 if ko_dir:
-    kos = sorted(glob.glob(os.path.join(ko_dir, '**', '*.ko'), recursive=True))
+    kos = []
+    for root, dirs, files in os.walk(ko_dir, followlinks=False):   # out/source -> .. : nu urmari symlink-uri
+        kos += [os.path.join(root, f) for f in files if f.endswith('.ko')]
+    kos.sort()
     for k in kos:
         v = ko_versions(k).get('module_layout')
         if v is not None and v != ml_stock: ko_bad.append(f'{os.path.basename(k)}={v:#x}')
