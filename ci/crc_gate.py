@@ -4,6 +4,7 @@ usage: crc_gate.py stock_crcs.txt Module.symvers report.txt [ko_dir] [stock_expo
 exit 1 if module_layout differs or more than MAX_DIFF CRCs differ."""
 import sys, os, struct, glob
 MAX_DIFF = int(os.environ.get('CRC_MAX_DIFF', '5'))
+ALLOW_MISSING = set(x for x in os.environ.get('CRC_ALLOW_MISSING', '').split(',') if x)
 stock_f, symvers_f, report_f = sys.argv[1:4]
 ko_dir = sys.argv[4] if len(sys.argv) > 4 else None
 exp_f = sys.argv[5] if len(sys.argv) > 5 else None
@@ -15,9 +16,10 @@ ours = {}
 for l in open(symvers_f):
     p = l.rstrip('\n').split('\t')
     if len(p) >= 2: ours[p[1]] = int(p[0], 16)
-missing = sorted(s for s in stock if s not in ours)
+missing = sorted(s for s in stock if s not in ours and s not in ALLOW_MISSING)
+allowed = sorted(s for s in stock if s not in ours and s in ALLOW_MISSING)
 diff = sorted(s for s in stock if s in ours and ours[s] != stock[s])
-same = len(stock) - len(missing) - len(diff)
+same = len(stock) - len(missing) - len(diff) - len(allowed)
 out = []
 out.append(f'stock CRCs: {len(stock)}  match: {same}  differ: {len(diff)}  missing in our kernel: {len(missing)}')
 ml_stock = stock.get('module_layout'); ml_ours = ours.get('module_layout')
@@ -45,6 +47,7 @@ if ko_dir:
     out += ['  ' + x for x in ko_bad[:50]]
 out.append('--- differing CRCs (symbol stock ours) ---')
 out += [f'{s} {stock[s]:#010x} {ours[s]:#010x}' for s in diff]
+out.append('--- allowed-missing (known, non-critical): ' + ' '.join(allowed))
 out.append('--- stock-imported symbols NOT exported by our kernel ---')
 out += missing
 if exp_f and os.path.exists(exp_f):

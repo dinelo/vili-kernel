@@ -123,7 +123,10 @@ jobs:
             printf '\n#ifdef CONFIG_DEBUG_POWER_MI\nint qrtr_first_msg = 1;\n#endif\n' >> net/qrtr/qrtr.c
             echo "definit qrtr_first_msg"
           fi
-          # 4) release identic cu stock: setlocalversion citeste .scmversion (fara "+")
+          # 4) exporturi Xiaomi nepublicate cerute de qti_battery_charger_main.ko (CRC = stock)
+          cp ../xiaomi/xiaomi_abi_stubs.c kernel/xiaomi_abi_stubs.c
+          grep -q 'xiaomi_abi_stubs.o' kernel/Makefile || echo 'obj-y += xiaomi_abi_stubs.o' >> kernel/Makefile
+          # 5) release identic cu stock: setlocalversion citeste .scmversion (fara "+")
           printf '%s' "$SCMVERSION" > .scmversion
 
       - name: Adauga ath9k_htc + rtl8187 (din mainline 5.4.86)
@@ -222,7 +225,12 @@ jobs:
           cp kernel/out/Module.symvers artifact/Module.symvers
           cp kernel/out/.config artifact/kernel.config
           cp config.diff artifact/config.diff 2>/dev/null || true
+          echo "===== GATE 1: 1020 CRC-uri (msm_drm, cnss2, camera) ====="
           python3 ci/crc_gate.py config/stock_crcs.txt kernel/out/Module.symvers artifact/crc_report.txt kernel/out config/stock_exports.txt
+          echo "===== GATE 2: toate cele 110 module din /vendor/lib/modules (simboluri din kernel) ====="
+          # mi_memory.ko (info memorie Xiaomi, necritic) cere exporturi UFS/memblock private Xiaomi
+          CRC_ALLOW_MISSING=get_ufs_data,get_ufs_hba_data,get_ufs_sdev_data,memblock_mem_size_in_gb,ufs_get_string_desc,ufs_read_desc_param,ufshcd_read_desc \
+            python3 ci/crc_gate.py config/stock_vendor_crcs.txt kernel/out/Module.symvers artifact/crc_report_all_vendor.txt
 
       - name: Pregateste AnyKernel3 (kernel-only, vili)
         run: |
