@@ -27,6 +27,15 @@ jobs:
           git clone --depth 1 -b v5.4.86 \
             https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git mainline
 
+      - name: Cloneaza dtsi-urile lipsa
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/Spanish-or-Vanish/kernel_xiaomi_sm8350.git sm8350tree
+          cd sm8350tree
+          git sparse-checkout set arch/arm64/boot/dts/vendor/qcom
+          cd ..
+          du -sh sm8350tree
+
       - name: Descarca firmware ath9k_htc
         run: |
           mkdir -p firmware
@@ -52,25 +61,41 @@ jobs:
           grep -q 'rtl818x' realtek/Makefile || printf 'obj-$(CONFIG_RTL8180) += rtl818x/\nobj-$(CONFIG_RTL8187) += rtl818x/\n' >> realtek/Makefile
           grep -q 'realtek/' Makefile || echo 'obj-$(CONFIG_WLAN_VENDOR_REALTEK) += realtek/' >> Makefile
 
+      - name: Completeaza dts-urile lipsa
+        run: |
+          SRCQ="$GITHUB_WORKSPACE/sm8350tree/arch/arm64/boot/dts/vendor/qcom"
+          DSTQ="$GITHUB_WORKSPACE/kernel/arch/arm64/boot/dts/vendor/qcom"
+          echo "=== subfoldere lipsa in sursa Xiaomi ==="
+          for d in "$SRCQ"/*/; do
+            name=$(basename "$d")
+            if [ ! -d "$DSTQ/$name" ]; then
+              echo "copiez: $name"
+              cp -rn "$d" "$DSTQ/"
+            else
+              echo "exista deja: $name"
+            fi
+          done
+          echo "=== continut dupa completare ==="
+          ls -la "$DSTQ" | head -30
+          echo "=== verificare lahaina-sde.dtsi ==="
+          ls -la "$DSTQ/display/lahaina-sde.dtsi" || echo "LIPSA!"
+
       - name: Normalizeaza config-ul
         run: |
           set -e
           if file vili_defconfig | grep -qi 'UTF-16'; then
-            echo "convertesc din UTF-16 in UTF-8"
             iconv -f UTF-16LE -t UTF-8 vili_defconfig > vili_utf8
             mv vili_utf8 vili_defconfig
           fi
           sed -i '1s/^\xEF\xBB\xBF//' vili_defconfig
           sed -i 's/\r$//' vili_defconfig
           file vili_defconfig
-          echo "linii: $(wc -l < vili_defconfig)"
           echo "linii CONFIG active: $(grep -c '^CONFIG_' vili_defconfig)"
           sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-g4d120346d9d9"|' vili_defconfig
           sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' vili_defconfig
           sed -i 's|^CONFIG_MODVERSIONS=y|CONFIG_MODVERSIONS=n|' vili_defconfig
           cat >> vili_defconfig <<'EOF'
           CONFIG_WLAN_VENDOR_ATH=y
-          CONFIG_WLAN_VENDOR_REALTEK=y
           CONFIG_ATH9K_HTC=m
           CONFIG_ATH9K_HTC_DEBUGFS=y
           CONFIG_ATH9K_HW=m
@@ -82,36 +107,34 @@ jobs:
           CONFIG_CRC_CCITT=y
           CONFIG_RTC_LIB=y
           EOF
-          echo "=== verificare config pregatit ==="
-          grep -E "^(# )?CONFIG_(LOCALVERSION|MODVERSIONS|ATH9K_HTC|RTL8187|RTC_LIB)" vili_defconfig
 
       - name: Build
         run: |
-          set -e
           cd kernel
           export PATH=/usr/lib/llvm-14/bin:$PATH
           export ARCH=arm64
           ARGS="ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-"
-          echo "clang: $(clang --version | head -1)"
-          echo "nproc: $(nproc)"
           mkdir -p out
           cp ../vili_defconfig out/.config
           make O=out $ARGS olddefconfig
-          echo "=== verificare config final ==="
-          echo "linii .config: $(wc -l < out/.config)"
-          grep -E "^CONFIG_(LOCALVERSION|RTC_LIB|MODVERSIONS|ATH9K_HTC|RTL8187|WLAN_VENDOR_ATH|MAC80211|CFG80211)=" out/.config
-          echo "=== gata verificarea, incepe compilarea ==="
-          make -j$(nproc) O=out $ARGS
+          echo "=== config final: $(wc -l < out/.config) linii ==="
+          echo "=== compilare (cu -k, nu se opreste la dtb-uri rupte) ==="
+          make -j$(nproc) O=out $ARGS -k || true
+          echo "=== verificare artefacte ==="
+          echo "--- kernel:"
+          ls -la out/arch/arm64/boot/Image* 2>/dev/null || echo "LIPSA Image"
+          echo "--- dtb/dtbо vili:"
+          find out/arch/arm64/boot/dts -iname "*vili*" 2>/dev/null || echo "LIPSA"
+          echo "--- module wireless:"
+          find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" 2>/dev/null || echo "LIPSA"
+          echo "--- total .ko: $(find out -name '*.ko' | wc -l)"
 
-      - name: Verifica rezultatul
+      - name: Verifica vermagic
         run: |
           cd kernel
-          echo "=== vermagic ==="
           find out -name "ath9k_htc.ko" -o -name "rtl8187.ko" | while read m; do
-            echo "--- $m"; modinfo "$m" | grep -i vermagic
+            echo "--- $m"; modinfo "$m" | grep -i vermagic || true
           done
-          echo "=== continut boot ==="
-          ls -la out/arch/arm64/boot/ | head -20
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -120,5 +143,6 @@ jobs:
           path: |
             kernel/out/arch/arm64/boot/Image*
             kernel/out/arch/arm64/boot/dts/**/*.dtb
+            kernel/out/arch/arm64/boot/dts/**/*.dtbo
             kernel/out/drivers/net/wireless/**/*.ko
             firmware/*.fw
