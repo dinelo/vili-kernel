@@ -5,7 +5,7 @@ name: Build kernel vili (NetHunter)
 # ABI-compatibil cu modulele vendor stock (MIUI V12.5.10.0.RKDMIXM).
 #
 #  * Config: EXACT config/stock.config (/proc/config.gz stock) + doar driverele
-#    NetHunter ca module (ath9k_htc + dependinte, rtl8187).
+#    NetHunter ca module (ath9k_htc + dependinte, rtl8187 + eeprom_93cx6).
 #  * Toolchain: AOSP clang r383902b1 (clang 11.0.2), acelasi ca la Xiaomi.
 #  * Sursa: MiCode vili-r-oss + headerele stock din IKHEADERS (xiaomi/stock-headers):
 #    sursa OSS nu are campurile Xiaomi MIGT/PACKAGE_RUNTIME_INFO din task_struct ->
@@ -164,6 +164,10 @@ jobs:
           set_cfg 'CONFIG_ATH9K_HW=m'
           set_cfg 'CONFIG_ATH9K_COMMON=m'
           set_cfg 'CONFIG_ATH9K_HTC=m'
+          # RTL8187 (Realtek USB) — sursa e deja in MiCode; fara firmware extern
+          set_cfg 'CONFIG_WLAN_VENDOR_REALTEK=y'
+          set_cfg 'CONFIG_EEPROM_93CX6=m'
+          set_cfg 'CONFIG_RTL8187=m'
           # stock nu are RELR (toolchain-ul Xiaomi nu l-a detectat) -> il tinem oprit
           set_cfg '# CONFIG_RELR is not set'
           make $ARGS olddefconfig
@@ -173,15 +177,18 @@ jobs:
           diff <(grep -E '^(CONFIG_|# CONFIG_)' ../config/stock.config | sort) \
                <(grep -E '^(CONFIG_|# CONFIG_)' out/.config | sort) | tee ../config.diff || true
           for o in CONFIG_MIGT CONFIG_PACKAGE_RUNTIME_INFO CONFIG_MODVERSIONS CONFIG_LTO_CLANG CONFIG_CFI_CLANG \
-                   CONFIG_ATH9K_HTC CONFIG_MAC80211_LEDS CONFIG_LOCALVERSION CONFIG_LOCALVERSION_AUTO CONFIG_RELR; do
+                   CONFIG_ATH9K_HTC CONFIG_RTL8187 CONFIG_EEPROM_93CX6 CONFIG_MAC80211_LEDS \
+                   CONFIG_LOCALVERSION CONFIG_LOCALVERSION_AUTO CONFIG_RELR; do
             printf '%-30s %s\n' "$o" "$(grep -E "^${o}=|^# ${o} is not set" out/.config || echo LIPSA)"
           done
           grep -q '^CONFIG_ATH9K_HTC=m' out/.config || { echo 'EROARE: ath9k_htc nu e modul'; exit 1; }
+          grep -q '^CONFIG_RTL8187=m' out/.config || { echo 'EROARE: rtl8187 nu e modul'; exit 1; }
+          grep -q '^CONFIG_EEPROM_93CX6=m' out/.config || { echo 'EROARE: eeprom_93cx6 nu e modul'; exit 1; }
           grep -q '^CONFIG_MIGT=y' out/.config || { echo 'EROARE: CONFIG_MIGT pierdut'; exit 1; }
           # nimic built-in (=y) nou fata de stock, in afara de bool-uri de meniu WLAN / ath9k-only / detectie toolchain
           extra=$(diff <(grep -E '^CONFIG_[A-Z0-9_]+=y' ../config/stock.config | sort) \
                        <(grep -E '^CONFIG_[A-Z0-9_]+=y' out/.config | sort) | grep '^>' \
-                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
+                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|WLAN_VENDOR_REALTEK|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
           [ -z "$extra" ] || { echo "EROARE: optiuni built-in noi fata de stock:"; echo "$extra"; exit 1; }
         env:
           ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -252,6 +259,32 @@ jobs:
           unzip -l artifact/AR9271-ath9k_htc-vili-stock-magisk.zip
           ls -l artifact/AR9271-ath9k_htc-vili-stock-magisk.zip
 
+      - name: Gate module rtl8187 vs kernelul STOCK (CRC + module_layout + vermagic)
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/magisk-rtl8187-src/lib
+          for m in eeprom_93cx6 rtl8187; do
+            case "$m" in
+              eeprom_93cx6) f=$(find kernel/out/drivers/misc/eeprom -name "$m.ko" | head -1) ;;
+              rtl8187)      f=$(find kernel/out/drivers/net/wireless/realtek -name "$m.ko" | head -1) ;;
+            esac
+            [ -n "${f:-}" ] || { echo "LIPSA $m.ko"; find kernel/out -name '*.ko' | head -40; exit 1; }
+            cp -v "$f" artifact/magisk-rtl8187-src/lib/
+          done
+          for k in artifact/magisk-rtl8187-src/lib/*.ko; do llvm-strip --strip-debug "$k"; done
+          python3 ci/ko_gate.py config/stock_kernel_crcs.txt \
+            "5.4.86-qgki-g4d120346d9d9 SMP preempt mod_unload modversions aarch64" \
+            artifact/ko_gate_report_rtl8187.txt artifact/magisk-rtl8187-src/lib/*.ko
+
+      - name: Modul Magisk RTL8187 (fara firmware)
+        run: |
+          set -euo pipefail
+          D=artifact/magisk-rtl8187-src
+          cp -r magisk-rtl8187/. "$D/"
+          (cd "$D" && zip -r9 ../RTL8187-vili-stock-magisk.zip . -x '.git*')
+          unzip -l artifact/RTL8187-vili-stock-magisk.zip
+          ls -l artifact/RTL8187-vili-stock-magisk.zip
+
       - name: Pregateste AnyKernel3 (kernel-only, vili) - doar daca gate-ul kernel a trecut
         if: steps.kgate.outcome == 'success'
         run: |
@@ -317,7 +350,8 @@ jobs:
         if: always()
         run: |
           ls -lR artifact | grep -v '^$' | head -80
-          [ -s artifact/AR9271-ath9k_htc-vili-stock-magisk.zip ] || { echo 'LIPSA zip Magisk'; exit 1; }
+          [ -s artifact/AR9271-ath9k_htc-vili-stock-magisk.zip ] || { echo 'LIPSA zip Magisk AR9271'; exit 1; }
+          [ -s artifact/RTL8187-vili-stock-magisk.zip ] || { echo 'LIPSA zip Magisk RTL8187'; exit 1; }
           echo "gate kernel (fallback): ${{ steps.kgate.outcome }}"
 
       - name: Salveaza build.log

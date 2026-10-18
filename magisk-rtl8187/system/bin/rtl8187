@@ -1,0 +1,57 @@
+#!/system/bin/sh
+# rtl8187 load|unload|status|fix|monitor|managed  - gestioneaza rtl8187 pe kernelul stock vili
+# Fixeaza mereu numele placii RTL8187 ca "wlan3" (dupa driver, nu dupa ordinea la boot)
+# wlan2 e rezervat pentru AR9271 (ath9k_htc); wlan0/wlan1 = Qualcomm intern
+MODDIR=/data/adb/modules/rtl8187_vili
+LIB=$MODDIR/lib
+FIXED=wlan3
+
+# gaseste interfata curenta a placii rtl8187 (orice nume ar avea)
+find_rtl() {
+  for n in /sys/class/net/wlan* /sys/class/net/mon* ; do
+    [ -e "$n" ] || continue
+    d=$(cat "$n/device/uevent" 2>/dev/null | grep -o 'DRIVER=rtl8187')
+    [ -n "$d" ] && { basename "$n"; return; }
+  done
+}
+
+rename_fixed() {
+  cur=$(find_rtl)
+  [ -z "$cur" ] && { echo "RTL8187 negasit (neconectata?)"; return 1; }
+  if [ "$cur" = "$FIXED" ]; then echo "RTL8187 deja = $FIXED"; return 0; fi
+  # daca exista deja altceva pe numele FIXED, nu suprascriu
+  if [ -e "/sys/class/net/$FIXED" ]; then echo "ATENTIE: $FIXED deja ocupat, las $cur"; return 1; fi
+  ip link set "$cur" down 2>/dev/null
+  if ip link set "$cur" name "$FIXED" 2>/dev/null; then
+    echo "redenumit $cur -> $FIXED"
+  else
+    echo "redenumire esuata (interfata e sus/ocupata?), ramane $cur"; return 1
+  fi
+}
+
+case "$1" in
+  load)
+    for m in eeprom_93cx6 rtl8187; do
+      if grep -q "^$m " /proc/modules; then echo "$m deja incarcat"; continue; fi
+      insmod "$LIB/$m.ko" && echo "insmod $m OK" || { echo "insmod $m ESUAT"; dmesg | tail -20; exit 1; }
+    done
+    # asteapta sa apara interfata, apoi fixeaza numele
+    i=0; while [ $i -lt 15 ]; do [ -n "$(find_rtl)" ] && break; sleep 1; i=$((i+1)); done
+    rename_fixed ;;
+  fix)
+    rename_fixed ;;
+  monitor)
+    rename_fixed
+    ip link set "$FIXED" down && iw dev "$FIXED" set type monitor && ip link set "$FIXED" up \
+      && echo "$FIXED in MONITOR" || echo "monitor esuat"
+    iw dev "$FIXED" info ;;
+  managed)
+    ip link set "$FIXED" down && iw dev "$FIXED" set type managed && ip link set "$FIXED" up \
+      && echo "$FIXED in MANAGED" || echo "managed esuat" ;;
+  unload)
+    for m in rtl8187 eeprom_93cx6; do rmmod "$m" 2>/dev/null && echo "rmmod $m"; done ;;
+  status|*)
+    grep -E '^(rtl8187|eeprom_93cx6) ' /proc/modules || echo "rtl8187 neincarcat"
+    cur=$(find_rtl); echo "interfata RTL8187: ${cur:-negasita}"
+    ;;
+esac

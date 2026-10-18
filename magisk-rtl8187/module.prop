@@ -1,0 +1,6 @@
+id=rtl8187_vili
+name=RTL8187 (stock kernel vili)
+version=v1.0
+versionCode=1
+author=dinelo
+description=rtl8187 + eeprom_93cx6 pentru adaptorul USB Realtek RTL8187 (0bda:8187), compilat pe ABI-ul kernelului stock 5.4.86-qgki-g4d120346d9d9 (MIUI V12.5.10.0.RKDMIXM). Nu inlocuieste kernelul. Interfata fixata pe wlan3.
