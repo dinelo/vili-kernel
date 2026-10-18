@@ -188,7 +188,7 @@ jobs:
           # nimic built-in (=y) nou fata de stock, in afara de bool-uri de meniu WLAN / ath9k-only / detectie toolchain
           extra=$(diff <(grep -E '^CONFIG_[A-Z0-9_]+=y' ../config/stock.config | sort) \
                        <(grep -E '^CONFIG_[A-Z0-9_]+=y' out/.config | sort) | grep '^>' \
-                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|WLAN_VENDOR_REALTEK|ATH9K_BTCOEX_SUPPORT|TOOLS_SUPPORT_RELR)=y' || true)
+                  | grep -vE 'CONFIG_(WLAN_VENDOR_ATH|WLAN_VENDOR_REALTEK|ATH9K_BTCOEX_SUPPORT|RTL_CARDS|TOOLS_SUPPORT_RELR)=y' || true)
           [ -z "$extra" ] || { echo "EROARE: optiuni built-in noi fata de stock:"; echo "$extra"; exit 1; }
         env:
           ARGS: O=out ARCH=arm64 LLVM=1 CC=clang LD=ld.lld HOSTCC=gcc HOSTCXX=g++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
